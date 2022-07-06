@@ -8,6 +8,7 @@ from threading import Thread
 import tensorflow.keras.layers as layers
 from tensorflow.keras.constraints import max_norm
 import tensorflow.keras as keras
+import keras
 import scipy.stats as stats
 from bisect import bisect_left
 import math
@@ -17,7 +18,10 @@ from copy import deepcopy
 import sklearn.metrics as met
 import pandas as pd
 
+
+#Utility functions:
 def startConcurrentTask(task,args,numCores,message,total,chunksize="none",verbose=True):
+
     if verbose:
         m = Manager()
         q = m.Queue()
@@ -38,6 +42,9 @@ def startConcurrentTask(task,args,numCores,message,total,chunksize="none",verbos
     return res
 
 def safeNormalize(x):
+    """
+    Safely normalize a vector, x, to sum to 1.0. If x is the zero vector return the normalized unity vector
+    """
     if np.sum(x) < 1e-6:
         tmp = np.ones(x.shape)
         return tmp / np.sum(tmp)
@@ -45,9 +52,15 @@ def safeNormalize(x):
         return x/np.sum(x)
 
 def normalizeMatrix(X):
+    """
+    Normalize a matrix so that the rows of X sum to one
+    """
     return np.array([safeNormalize(x) for x in X])
 
 def classify(preds):
+    """
+    Classify predictions, preds, by returning the index of the highest scoring class
+    """
     classes = np.zeros(preds.shape)
     for x in range(len(preds)):
         classes[x,list(preds[x]).index(np.max(list(preds[x])))] = 1
@@ -95,6 +108,9 @@ def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=
         print()
 
 def updateProgress(q, total,message = ""):
+    """
+    update progress bar
+    """
     counter = 0
     while counter != total:
         if not q.empty():
@@ -105,11 +121,17 @@ def updateProgress(q, total,message = ""):
 
 
 def getIndexOfClosestValue(l,v):
+    """
+    get index of list with closest value to v
+    """
     order = list(range(len(l)))
     order.sort(key=lambda x:np.abs(l[x]-v))
     return order[0]
 
 class PeakDetective():
+    """
+    Class for curation/detection of LC/MS peaks in untargerted metabolomics data
+    """
     def __init__(self,resolution=100,numCores=1,windowSize = 1.0):
         self.resolution = resolution
         self.numCores = numCores
