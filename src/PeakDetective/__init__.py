@@ -8,7 +8,6 @@ from threading import Thread
 import tensorflow.keras.layers as layers
 from tensorflow.keras.constraints import max_norm
 import tensorflow.keras as keras
-import keras
 import scipy.stats as stats
 from bisect import bisect_left
 import math
