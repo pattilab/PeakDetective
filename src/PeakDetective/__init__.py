@@ -341,8 +341,9 @@ class PeakDetective():
                     numManualPerRound = len(order)
                 for ind in order[:numManualPerRound]:
                     plt.figure()
-                    plt.plot(range(len(X[ind])),X[ind])
-                    plt.plot(range(len(X[ind])),np.sum(X[ind])*X_merge[ind])
+                    plt.plot(range(len(X[ind])),X[ind],label="raw data")
+                    plt.plot(range(len(X[ind])),np.sum(X[ind])*X_merge[ind],label="smoothed data")
+                    plt.legend()
                     plt.xlabel("time (arbitrary)")
                     plt.ylabel("intensity")
                     plt.title(classifer.predict([X_merge[ind:ind+1],tic_merge[ind:ind+1]])[0][1])
@@ -399,7 +400,7 @@ class PeakDetective():
                 peaks_curated[file].append(index)
         peaks_curated = {file: peaks.loc[peaks_curated[file], :] for file in peaks_curated}
 
-        return peaks_curated,X,X_norm,tics,y,numRemaining,peak_scores
+        return peaks_curated,X,X_norm,tics,scores,numRemaining,peak_scores
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
