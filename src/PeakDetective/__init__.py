@@ -5,9 +5,9 @@ from scipy.interpolate import UnivariateSpline
 import matplotlib.pyplot as plt
 from multiprocessing import Manager,Pool
 from threading import Thread
-import tensorflow.keras.layers as layers
-from tensorflow.keras.constraints import max_norm
-import tensorflow.keras as keras
+from tensorflow import keras
+from keras.constraints import max_norm
+import keras.layers as layers
 import scipy.stats as stats
 from bisect import bisect_left
 import math
