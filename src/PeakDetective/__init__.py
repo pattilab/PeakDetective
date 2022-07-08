@@ -308,6 +308,7 @@ class PeakDetective():
         #tic_merge = np.ones(tic_merge.shape)
 
         #smooth data
+        #X_merge = self.encoder.predict(X_merge)
         X_merge = self.smoother.predict(X_merge)
         X_merge = normalizeMatrix(X_merge)
 
@@ -324,6 +325,8 @@ class PeakDetective():
             print("round " + str(i+1) + ": " + str(len(updatingInds)) + " unclassified features")
             numRemaining.append(len(updatingInds))
             classifer = Classifier(self.resolution)
+            #classifer = Classifier(self.resolution)
+
             classifer.fit([X_merge[trainingInds], tic_merge[trainingInds]], y[trainingInds], epochs=class_epochs,
                               batch_size=batch_size, validation_split=validation_split,verbose=0)
             scores = classifer.predict([X_merge[updatingInds], tic_merge[updatingInds]])
@@ -668,7 +671,7 @@ def Smoother(resolution):
 
     x = layers.Flatten()(x)
 
-    x = layers.Dense(10, activation="relu")(x)
+    x = layers.Dense(5, activation="relu")(x)
 
     x = layers.Dense(int((resolution-8) * 4), activation="relu")(x)
 
@@ -720,6 +723,27 @@ def Classifier(resolution):
 
     x = layers.concatenate([x.output, tic.output], axis=1)
     x = layers.Dense(10, activation="relu")(x)
+    output = layers.Dense(2, activation="softmax")(x)
+
+    classifier = keras.Model([descriminatorInput, ticInput], output, name="discriminator")
+
+    classifier.compile(loss='binary_crossentropy', optimizer=keras.optimizers.Adam(1e-4),
+                          metrics=['mean_absolute_error'])
+
+    return classifier
+
+def ClassifierLatent(resolution):
+    descriminatorInput = keras.Input(shape=(resolution,))
+    ticInput = keras.Input(shape=(1,))
+
+    x = layers.Dense(resolution, activation="relu")(descriminatorInput)
+    x = keras.Model(descriminatorInput, x)
+
+    tic = keras.Model(ticInput, layers.Dense(1, activation="linear")(ticInput))
+
+    x = layers.concatenate([x.output, tic.output], axis=1)
+
+    x = layers.Dense(3, activation="relu")(x)
     output = layers.Dense(2, activation="softmax")(x)
 
     classifier = keras.Model([descriminatorInput, ticInput], output, name="discriminator")
