@@ -227,6 +227,9 @@ class PeakDetective():
         X_signal = X_noise + X_signal
         X_signal = normalizeMatrix(X_signal)
 
+        apexInd = int(np.floor(X_norm.shape[1]/2))
+        signal_tics = np.array([np.max([1,tic*x[apexInd]]) for tic,x in zip(signal_tics,X_signal)])
+
         return X_signal, signal_tics
 
     def generateSignalPeaks(self,X_norm,tics,centerDist,numPeaksDist = (0,2),widthFactor = 0.1,s2nFactor=.3,heightFactor = 1,n=None):
@@ -250,10 +253,13 @@ class PeakDetective():
         X_signal = X_noise + X_signal
         X_signal = normalizeMatrix(X_signal)
 
+        apexInd = int(np.floor(X_norm.shape[1]/2))
+        signal_tics = np.array([np.max([1,tic*x[apexInd]]) for tic,x in zip(signal_tics,X_signal)])
+
         return X_signal,signal_tics
 
 
-    def curatePeaks(self,raw_datas,peaks,smooth_epochs = 10,class_epochs = 10,batch_size=64,validation_split=0.1,useSynthetic=True,numManualPerRound = 3,min_peaks = 100000,shift = .5,threshold=.5,alpha=0.05,noise=1000,inJupyter = True):
+    def curatePeaks(self,raw_datas,peaks,smooth_epochs = 10,class_epochs = 10,batch_size=64,validation_split=0.1,useSynthetic=True,numManualPerRound = 3,min_peaks = 100000,shift = .5,threshold=.5,alpha=0.05,noise=1000,autoClassify = True,inJupyter = True):
 
         #generate data matrix
         print("generated EICs...")
@@ -265,12 +271,12 @@ class PeakDetective():
 
         if len(peaks) * len(raw_datas) < min_peaks:
             numToGet = int((min_peaks - len(peaks) * len(raw_datas))/len(raw_datas))
-            print("insufficent # of EICs, shifting",numToGet,"random peaks", shift, "to", shift + 1, "minutes")
+            print("insufficent # of EICs, shifting",numToGet,"random peaks", 0 , "to", shift , "minutes")
             tmp = list(range(len(mzs)))
             tmp = rd.choices(tmp,k=numToGet)
 
             mzs += [mzs[x] for x in tmp]
-            shifts = [shift + np.random.random() for x in tmp]
+            shifts = [rd.choice([-1,1]) * shift * np.random.random() for x in tmp]
             rt_starts += [rt_starts[x] + shift for x,shift in zip(tmp,shifts)]
             rt_ends += [rt_ends[x] + shift for x,shift in zip(tmp,shifts)]
 
@@ -278,15 +284,21 @@ class PeakDetective():
 
         #normalize matrix
         X_norm = normalizeMatrix(X)
+        apexInd = int(np.floor(X_norm.shape[1]/2))
         tics = np.log10(np.array([np.max([2, np.sum(x)]) for x in X]))
+        ticsApex = np.log10(np.array([np.max([1,x[apexInd]]) for x in X]))
 
-        noise = []
+
+        noiseInds = []
         for x in range(len(tics)):
             if np.power(10,tics[x]) * np.max(X_norm[x]) < noise:
-                noise.append(x)
+            #if np.power(10,tics[x]) < noise:
+                noiseInds.append(x)
+
 
         X_norm_clean = deepcopy(X_norm)
-        X_norm_clean[noise] = np.zeros(X_norm_clean[noise].shape)
+        X_norm_clean[noiseInds] = np.zeros(X_norm_clean[noiseInds].shape)
+
 
         #X_norm_with_noise = normalizeMatrix(X + np.random.normal(noise,noise/2,X.shape))
 
@@ -295,7 +307,7 @@ class PeakDetective():
         #fit autoencoder
         print("fitting smoother...")
         smoother = Smoother(self.resolution)
-        smoother.fit(X_norm, X_norm_clean, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split,verbose=1)#,sample_weight=tics)
+        smoother.fit(X_norm, X_norm_clean, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split,verbose=1)#,sample_weight=np.power(10,tics))
         #smoother.fit(X, X, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split)
         self.smoother = smoother
         self.encoder = keras.Model(smoother.input, smoother.layers[6].output)
@@ -303,11 +315,18 @@ class PeakDetective():
 
         indsToKeep = []
         start = 0
+        rt_starts_tmp = []
+        rt_ends_tmp =[]
         for _ in raw_datas:
             indsToKeep += list(range(start,start + realEnd))
             start += len(rt_ends)
+            rt_starts_tmp += list(rt_starts[:realEnd])
+            rt_ends_tmp += list(rt_ends[:realEnd])
 
+        rt_starts = rt_starts_tmp
+        rt_ends = rt_ends_tmp
         X_norm = X_norm[indsToKeep]
+        X = X[indsToKeep]
 
         if useSynthetic:
             #generate synthetic data
@@ -319,7 +338,7 @@ class PeakDetective():
             #create merged matrices
             y = np.array([[.5,.5] for _ in X_norm] + [[1,0] for _ in X_noise] + [[0,1] for _ in X_signal])
             X_merge = np.concatenate((X_norm,X_noise,X_signal),axis=0)
-            tic_merge = np.concatenate((tics, noise_tics,signal_tics))
+            tic_merge = np.concatenate((ticsApex, noise_tics,signal_tics))
             #tic_merge = np.ones(tic_merge.shape)
 
             #smooth data
@@ -343,7 +362,7 @@ class PeakDetective():
             X_smoothed = normalizeMatrix(X_smoothed)
 
             X_merge = self.encoder.predict(X_norm)
-            tic_merge = deepcopy(tics)
+            tic_merge = deepcopy(ticsApex)
 
             updatingInds = list(range(len(X_norm)))
             trainingInds = []
@@ -355,6 +374,7 @@ class PeakDetective():
         noiseCount = 0
         for ind in realInds:
             if np.power(10,tic_merge[ind]) * np.max(X_norm[ind]) < noise:
+            #if np.max(X_norm[ind]) < noise:
                 y[ind] = [1,0]
                 updatingInds.remove(ind)
                 #trainingInds.append(ind)
@@ -366,6 +386,8 @@ class PeakDetective():
         doMore = True
         i = 0
         labeledInds = []
+        first = True
+        performance = []
         while doMore:
             if len(updatingInds) > 0:
                 print("round " + str(i+1) + ": " + str(len(updatingInds)) + " unclassified features")
@@ -380,6 +402,7 @@ class PeakDetective():
                     numManualPerRound = len(order)
 
                 for ind in order[:numManualPerRound]:
+                    print(ind,len(X),len(X_smoothed),len(rt_starts),len(rt_ends),len(y))
                     val = self.labelPeak([X[ind],np.sum(X[ind]) * X_smoothed[ind]],rt_starts[ind],rt_ends[ind],inJupyter,y[ind][1])
                     y[ind,0] = 1-val
                     y[ind,1] = val
@@ -388,11 +411,12 @@ class PeakDetective():
                     updatingInds.remove(ind)
                     labeledInds.append(ind)
 
-                for ind in updatingInds:
-                   if y[ind][1] > 1-alpha or y[ind][0] > 1-alpha:
-                       y[ind:ind+1] = classify(y[ind:ind+1])
-                       trainingInds.append(ind)
-                       updatingInds.remove(ind)
+                if autoClassify:
+                    for ind in updatingInds:
+                       if y[ind][1] > 1-alpha or y[ind][0] > 1-alpha:
+                           y[ind:ind+1] = classify(y[ind:ind+1])
+                           trainingInds.append(ind)
+                           updatingInds.remove(ind)
 
                 classifer = ClassifierLatent(X_merge.shape[1])
 
@@ -407,8 +431,16 @@ class PeakDetective():
                 )
 
                 #labeledInds = list(set(trainingInds).intersection(set(realInds)))
-                valInds = rd.sample(labeledInds,k=int(validation_split*len(labeledInds)))
-                tmpTrainInds = [x for x in trainingInds if x not in valInds]
+
+                if first:
+                    valInds = deepcopy(labeledInds)
+                    tmpTrainInds = [x for x in trainingInds if x not in valInds]
+                    if len(tmpTrainInds) == 0:
+                        tmpTrainInds = deepcopy(updatingInds)
+                    first = False
+                else:
+                    # valInds = rd.sample(labeledInds,k=int(validation_split*len(labeledInds)))
+                    tmpTrainInds = [x for x in trainingInds if x not in valInds]
 
 
                 history = keras.callbacks.History()
@@ -421,6 +453,14 @@ class PeakDetective():
                 #print("val loss:",history.history["val_loss"][cb.best_epoch],"val_mean_absolute_error",history.history["val_mean_absolute_error"][cb.best_epoch])
 
                 y[updatingInds] = classifer.predict([X_merge[updatingInds], tic_merge[updatingInds]])
+
+                plt.figure()
+                plt.hist(y[realInds,1],bins=20)
+                plt.title("round" + str(i+1))
+                plt.show()
+
+                performance.append(history.history["val_mean_absolute_error"][cb.best_epoch])
+
                 print(str(len(updatingInds)) + " unclassified features remaining")
                 print("Continue with another iteration? (1=Yes, 0=No): ")
                 tmp = float(input())
@@ -459,7 +499,7 @@ class PeakDetective():
                 peaks_curated[file].append(index)
         peaks_curated = {file: peaks.loc[peaks_curated[file], :] for file in peaks_curated}
 
-        return peaks_curated,X,X_norm,tics,scores,numRemaining,peak_scores
+        return peaks_curated,X,X_norm,tics,scores,numRemaining,peak_scores,performance
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
@@ -482,11 +522,11 @@ class PeakDetective():
         plt.title(title)
         plt.show()
         print("Enter classification (1=True Peak, 0=Artifact): ")
-        val = float(input())
+        val = input()
         while not validateInput(val):
             print("invalid classification: ")
-            val = float(input())
-
+            val = input()
+        val = float(val)
         plt.close()
         if inJupyter:
             IPython.display.clear_output(wait=True)
@@ -651,9 +691,13 @@ class PeakDetective():
 
 
 def validateInput(input):
-    if input not in [0,1]:
+    try:
+        input = float(input)
+        if input not in [0,1]:
+            return False
+        return True
+    except:
         return False
-    return True
 
 class rawData():
     def __init__(self):
@@ -727,14 +771,22 @@ def Smoother(resolution):
     x = layers.Conv1D(32, kernelsize, strides=stride, activation='relu', kernel_constraint=max_norm(max_norm_value),
                      kernel_initializer='he_uniform')(x)
 
+    #x = layers.BatchNormalization()(x)
+
     x = layers.Conv1D(16, kernelsize, strides=stride, activation='relu', kernel_constraint=max_norm(max_norm_value),
                      kernel_initializer='he_uniform')(x)
+
+    #x = layers.BatchNormalization()(x)
 
     x = layers.Conv1D(8, kernelsize, strides=stride, activation='relu', kernel_constraint=max_norm(max_norm_value),
                       kernel_initializer='he_uniform')(x)
 
+    #x = layers.BatchNormalization()(x)
+
     x = layers.Conv1D(4, kernelsize, strides=stride, activation='relu', kernel_constraint=max_norm(max_norm_value),
                       kernel_initializer='he_uniform')(x)
+
+    #x = layers.BatchNormalization()(x)
 
     x = layers.Flatten()(x)
 
@@ -747,11 +799,17 @@ def Smoother(resolution):
     x = layers.Conv1DTranspose(8, kernelsize, strides=stride, activation='relu',
                                kernel_constraint=max_norm(max_norm_value), kernel_initializer='he_uniform')(x)
 
+    #x = layers.BatchNormalization()(x)
+
     x = layers.Conv1DTranspose(16, kernelsize, strides=stride, activation='relu',
                               kernel_constraint=max_norm(max_norm_value), kernel_initializer='he_uniform')(x)
 
+    #x = layers.BatchNormalization()(x)
+
     x = layers.Conv1DTranspose(32, kernelsize, strides=stride, activation='relu',
                               kernel_constraint=max_norm(max_norm_value), kernel_initializer='he_uniform')(x)
+
+    #x = layers.BatchNormalization()(x)
 
     x = layers.Conv1DTranspose(1, kernelsize, strides=stride, activation='sigmoid',
                                kernel_constraint=max_norm(max_norm_value), kernel_initializer='he_uniform')(x)
@@ -813,7 +871,7 @@ def ClassifierLatent(resolution):
 
     x = layers.concatenate([x.output, tic.output], axis=1)
 
-    x = layers.Dense(int(resolution), activation="relu")(x)
+    #x = layers.Dense(int(resolution), activation="relu")(x)
 
     #x = layers.Dense(int(resolution * 2), activation="relu")(x)
 
@@ -821,7 +879,7 @@ def ClassifierLatent(resolution):
 
     x = layers.Dense(5, activation="relu")(x)
 
-    x = layers.Dense(3, activation="relu")(x)
+    #x = layers.Dense(3, activation="relu")(x)
 
     output = layers.Dense(2, activation="softmax")(x)
 
