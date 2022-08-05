@@ -181,17 +181,8 @@ class PeakDetective():
         result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, self.numCores, "forming matrix", len(args))
         return np.concatenate(result,axis=0)
 
-    def generateNoisePeaks(self,X_norm):
-        X_noise = X_norm.flatten()
-        np.random.shuffle(X_noise)
-        X_noise = np.reshape(X_noise, X_norm.shape)
-        X_noise = normalizeMatrix(X_noise)
-        #noise_tics = np.array(tics)
-        #np.random.shuffle(noise_tics)
-        return X_noise#,noise_tics
-
-    def generateGaussianPeaks(self,X_norm, centerDist, numPeaksDist=(0,2), widthFactor=0.1, heightFactor=1):
-        X_signal = np.zeros(X_norm.shape) #self.generateNoisePeaks(X_norm, tics)
+    def generateGaussianPeaks(self,n, centerDist, numPeaksDist=(0,2), widthFactor=0.1, heightFactor=1):
+        X_signal = np.zeros((n,self.resolution)) #self.generateNoisePeaks(X_norm, tics)
         switcher = list(range(len(centerDist)))
         for x, s in zip(range(len(X_signal)), np.random.random(len(X_signal))):
             if numPeaksDist[0] >= numPeaksDist[1]:
@@ -209,68 +200,57 @@ class PeakDetective():
 
         return X_signal
 
-    def generateFalsePeaks(self,X_norm,tics, centerDist, numPeaksDist=(0,2), widthFactor=0.1, s2nFactor=.3,heightFactor=1,n=None):
+    def generateFalsePeaks(self,peaks,raw_datas, n=None):
         if type(n) == type(None):
-            n = len(X_norm)
-        X_norm = X_norm[rd.sample(list(range(len(X_norm))),k=n)]
-        X_noise = self.generateNoisePeaks(X_norm)
-        X_noise_peaks = self.generateGaussianPeaks(X_norm, centerDist, numPeaksDist, widthFactor, heightFactor)
+            n = len(peaks)
 
-        s2n = s2nFactor * np.random.random(len(X_noise_peaks))
-        s2nInv = 1 - s2n
-        signal_tics = np.array(tics)
-        np.random.shuffle(signal_tics)
+        peaks_rand = pd.DataFrame()
+        peaks_rand["rt"] = rd.choices(list(peaks["rt"].values),k=n)
+        peaks_rand["mz"] = rd.choices(list(peaks["mz"].values),k=n)
 
-        X_noise = s2n[:, np.newaxis] * X_noise
-        X_signal = s2nInv[:, np.newaxis] * X_noise_peaks
+        X_noise = self.makeDataMatrix(raw_datas,peaks_rand["mz"].values,peaks_rand["rt"].values - self.windowSize/2,peaks_rand["rt"].values + self.windowSize/2)
 
-        X_signal = X_noise + X_signal
-        X_signal = normalizeMatrix(X_signal)
+        signal_tics = np.array([np.sum(x) for x in X_noise])
 
-        apexInd = int(np.floor(X_norm.shape[1]/2))
-        signal_tics = np.array([np.max([1,tic*x[apexInd]]) for tic,x in zip(signal_tics,X_signal)])
+        X_signal = normalizeMatrix(X_noise)
 
         return X_signal, signal_tics
 
-    def generateSignalPeaks(self,X_norm,tics,centerDist,numPeaksDist = (0,2),widthFactor = 0.1,s2nFactor=.3,heightFactor = 1,n=None):
+    def generateSignalPeaks(self,peaks,raw_datas,widthFactor = 0.1,s2nFactor=.2,heightFactor = 1,min_signal = 1000,n=None):
         if type(n) == type(None):
-            n = len(X_norm)
-        X_norm = X_norm[rd.sample(list(range(len(X_norm))),k=n)]
-        X_noise = self.generateNoisePeaks(X_norm)
-        X_noise_peaks = self.generateGaussianPeaks(X_norm,centerDist,numPeaksDist,widthFactor,heightFactor)
-        X_signal_peaks = self.generateGaussianPeaks(X_norm,[[0.45,0.5],[0.5,0.55]],(1,1),widthFactor,heightFactor)
-        X_signal = X_noise_peaks + X_signal_peaks
-        X_signal = normalizeMatrix(X_signal)
+            n = len(peaks)
+        X_noise_peaks,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=n)
+        X_signal_peaks = self.generateGaussianPeaks(n*len(raw_datas),[[0.45,0.5],[0.5,0.55]],(1,1),widthFactor,heightFactor)
 
-        s2n = s2nFactor * np.random.random(len(X_signal))
+        s2n = s2nFactor * np.random.random(len(X_signal_peaks))
         s2nInv = 1 - s2n
-        signal_tics = np.array(tics)
-        np.random.shuffle(signal_tics)
 
-        X_noise = s2n[:, np.newaxis] * X_noise
-        X_signal = s2nInv[:, np.newaxis] * X_signal
+        signal_tics = np.array([max([min_signal,t*(1/x-1)]) for t,x in zip(noise_tics,s2n)])
 
-        X_signal = X_noise + X_signal
-        X_signal = normalizeMatrix(X_signal)
+        X_noise = s2n[:, np.newaxis] * X_noise_peaks
+        X_signal = s2nInv[:, np.newaxis] * X_signal_peaks
 
-        apexInd = int(np.floor(X_norm.shape[1]/2))
-        signal_tics = np.array([np.max([1,tic*x[apexInd]]) for tic,x in zip(signal_tics,X_signal)])
+        X = X_noise + X_signal
 
-        return X_signal,signal_tics
+        X = normalizeMatrix(X)
+
+        signal_tics = np.add(signal_tics,noise_tics)
+
+        return X,X_signal,signal_tics
 
 
     def curatePeaks(self,raw_datas,peaks,smooth_epochs = 10,class_epochs = 10,batch_size=64,validation_split=0.1,useSynthetic=True,numManualPerRound = 3,min_peaks = 100000,shift = .5,threshold=.5,alpha=0.05,noise=1000,autoClassify = True,inJupyter = True):
 
         #generate data matrix
-        print("generated EICs...")
+        print("generating EICs...")
         mzs = list(peaks["mz"].values)
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
         rt_ends = [row["rt"] + self.windowSize/2 for _,row in peaks.iterrows()]
         realEnd = len(mzs)
 
 
-        if len(peaks) * len(raw_datas) < min_peaks:
-            numToGet = int((min_peaks - len(peaks) * len(raw_datas))/len(raw_datas))
+        if 2 * len(peaks) * len(raw_datas) < min_peaks:
+            numToGet = int((min_peaks - 2 * len(peaks) * len(raw_datas))/len(raw_datas))
             print("insufficent # of EICs, shifting",numToGet,"random peaks", 0 , "to", shift , "minutes")
             tmp = list(range(len(mzs)))
             tmp = rd.choices(tmp,k=numToGet)
@@ -281,12 +261,29 @@ class PeakDetective():
             rt_ends += [rt_ends[x] + shift for x,shift in zip(tmp,shifts)]
 
         X = self.makeDataMatrix(raw_datas,mzs,rt_starts,rt_ends)
+        X_norm_clean = deepcopy(X)
+
+        if useSynthetic:
+            #generate synthetic data
+            print("generating synthetic data...",end="")
+            X_signal,X_pure,signal_tics = self.generateSignalPeaks(peaks,raw_datas,n=int(len(peaks)/2))
+            X_noise,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=int(len(peaks)/2))
+            X_noise_pure = np.zeros(X_noise.shape)
+
+            X = np.concatenate((X,X_signal,X_noise))
+            X_norm_clean = np.concatenate((X,X_pure,X_noise_pure))
+
+            print("done")
+
+
 
         #normalize matrix
         X_norm = normalizeMatrix(X)
+        X_norm_clean = normalizeMatrix(X_norm_clean)
         apexInd = int(np.floor(X_norm.shape[1]/2))
         tics = np.log10(np.array([np.max([2, np.sum(x)]) for x in X]))
-        ticsApex = np.log10(np.array([np.max([1,x[apexInd]]) for x in X]))
+        #ticsApex = np.log10(np.array([np.max([2,x[apexInd]]) for x in X]))
+        ticsApex = np.log10(np.array([np.max([2,integratePeak(x)]) for x in X]))
 
 
         noiseInds = []
@@ -296,7 +293,6 @@ class PeakDetective():
                 noiseInds.append(x)
 
 
-        X_norm_clean = deepcopy(X_norm)
         X_norm_clean[noiseInds] = np.zeros(X_norm_clean[noiseInds].shape)
 
 
@@ -330,10 +326,16 @@ class PeakDetective():
 
         if useSynthetic:
             #generate synthetic data
-            print("generating synthetic data...",end="")
-            X_signal,signal_tics = self.generateSignalPeaks(X_norm,tics,[[0,.40],[.6,1.0]],n=int(len(X_norm)/2))
-            X_noise,noise_tics = self.generateFalsePeaks(X_norm,tics, [[0,.40],[.6,1.0]],n=int(len(X_norm)/2))
-            #X_noise,noise_tics = self.generateNoisePeaks(X_norm,tics)
+            #print("generating synthetic data...",end="")
+            #X_signal,signal_tics = self.generateSignalPeaks(peaks,raw_datas,n=int(len(peaks)/2))
+            #X_noise,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=int(len(peaks)/2))
+
+            # signal_tics = np.log10(np.array([np.max([2, signal_tics[x] * X_signal[x,apexInd]]) for x in range(len(X_signal))]))
+            # noise_tics = np.log10(np.array([np.max([2, noise_tics[x] * X_noise[x,apexInd]]) for x in range(len(X_noise))]))
+
+            signal_tics = np.log10(np.array([np.max([2, integratePeak(signal_tics[x] * X_signal[x])]) for x in range(len(X_signal))]))
+            noise_tics = np.log10(np.array([np.max([2, integratePeak(noise_tics[x] * X_noise[x])]) for x in range(len(X_noise))]))
+
 
             #create merged matrices
             y = np.array([[.5,.5] for _ in X_norm] + [[1,0] for _ in X_noise] + [[0,1] for _ in X_signal])
@@ -486,20 +488,23 @@ class PeakDetective():
 
         peaks_curated = {raw.filename: [] for raw in raw_datas}
         peak_scores = deepcopy(peaks)
+        peak_intensities = deepcopy(peaks)
 
         keys = []
         for raw in raw_datas:
             peak_scores[raw.filename] = np.zeros(len(peak_scores.index.values))
+            peak_intensities[raw.filename] = np.zeros(len(peak_scores.index.values))
             for index in peaks.index.values:
                 keys.append([raw.filename, index])
 
-        for [file, index], score in zip(keys, y[realInds][:,1]):
+        for [file, index], score,intensity in zip(keys, y[realInds][:,1],tic_merge[realInds]):
             peak_scores.at[index,file] = score
+            peak_intensities.at[index,file] = intensity
             if score > threshold:
                 peaks_curated[file].append(index)
         peaks_curated = {file: peaks.loc[peaks_curated[file], :] for file in peaks_curated}
 
-        return peaks_curated,X,X_norm,tics,scores,numRemaining,peak_scores,performance
+        return peaks_curated,X,X_norm,tics,scores,numRemaining,peak_scores,performance,peak_intensities
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
@@ -909,3 +914,39 @@ def makePRCPlot(pred,true,noSkill=True):
                      np.round(numPositive / float(numPositive + numNegative), 4)))
     plt.legend()
     return auc
+
+
+def findPeakBoundaries(peak):
+    apex = int(len(peak)/2)
+    #find left bound
+
+    foundNewApex = True
+
+    while(foundNewApex):
+        foundNewApex = False
+
+        x = apex
+        while peak[x] > peak[apex] / 2 and x > 0:
+            if peak[x] > peak[apex]:
+                apex = x
+            x -= 1
+        lb = x
+
+        x = apex
+        while peak[x] > peak[apex] / 2 and x < len(peak) - 1:
+            if peak[x] > peak[apex]:
+                apex = x
+                foundNewApex = True
+            x += 1
+        rb = x
+
+    return lb,rb
+
+def integratePeak(peak):
+    lb,rb = findPeakBoundaries(peak)
+    if lb != rb:
+        area = np.trapz(peak[lb:rb],np.linspace(lb,rb,rb-lb))
+    else:
+        area = 0
+    return area
+
