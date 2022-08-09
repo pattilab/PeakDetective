@@ -306,7 +306,7 @@ class PeakDetective():
         smoother.fit(X_norm, X_norm_clean, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split,verbose=1)#,sample_weight=np.power(10,tics))
         #smoother.fit(X, X, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split)
         self.smoother = smoother
-        self.encoder = keras.Model(smoother.input, smoother.layers[6].output)
+        self.encoder = keras.Model(smoother.input, smoother.layers[7].output)
         print("done")
 
         indsToKeep = []
@@ -795,7 +795,7 @@ def Smoother(resolution):
 
     x = layers.Flatten()(x)
 
-    x = layers.Dense(10, activation="relu")(x)
+    x = layers.Dense(5, activation="relu")(x)
 
     x = layers.Dense(int((resolution-8) * 4), activation="relu")(x)
 
