@@ -866,9 +866,9 @@ def ClassifierLatent(resolution):
     descriminatorInput = keras.Input(shape=(resolution,))
     ticInput = keras.Input(shape=(1,))
 
-    x = layers.Dense(resolution, activation="relu")(descriminatorInput)
+    #x = layers.Dense(resolution, activation="relu")(descriminatorInput)
 
-    #x = layers.Layer()(descriminatorInput)
+    x = layers.Layer()(descriminatorInput)
 
     x = keras.Model(descriminatorInput, x)
 
