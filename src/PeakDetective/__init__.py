@@ -709,8 +709,7 @@ class PeakDetective():
                 rt += dt * window
 
 
-        ticsOrig = np.log10(np.array([np.sum(x) for x in X]))
-        tics = ticsOrig#np.ones(ticsOrig.shape)
+        tics = np.log10(np.array([np.max([2,integratePeak(x)]) for x in X]))
         X = normalizeMatrix(X)
         print("done, ",len(X)," EICs generated")
         print("smoothing EICs...")
@@ -721,7 +720,7 @@ class PeakDetective():
         print("classifying peaks...")
         y = self.classifier.predict([X,tics],verbose=1)[:,1]
         print("done")
-        for mz,rt,score,tic in zip(mzs,rts,y,ticsOrig):
+        for mz,rt,score,tic in zip(mzs,rts,y,tics):
             if score > cutoff and tic > noiseCutoff:
                 peaks.append([mz,rt,score])
 
@@ -732,7 +731,7 @@ class PeakDetective():
 
         print(len(peaks)," peaks found")
 
-        return peaks
+        return peaks,X
 
     def getPeakBoundaries(self,X,samples,peakScores,cutoff,frac):
         peakBoundaries = pd.DataFrame(index=peakScores.index.values)
@@ -745,7 +744,7 @@ class PeakDetective():
                 if index in goodInds:
                     if row[samp] > cutoff:
                         lb,rb = findPeakBoundaries(X[i])
-                        actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize,self.resolution)
+                        actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
                         bounds.append((actualRts[lb],actualRts[rb]))
                     else:
                         bounds.append((-1,-1))
