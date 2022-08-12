@@ -127,6 +127,46 @@ def getIndexOfClosestValue(l,v):
     order.sort(key=lambda x:np.abs(l[x]-v))
     return order[0]
 
+def generateSkylineFiles(peak_scores,peak_boundaries,samples,polarity,cutoff=0.0,frac=0.0,moleculeListName = "XCMS peaks"):
+    transitionList = deepcopy(peak_scores)
+    toDrop = []
+    for index,row in transitionList.iterrows():
+        if float(len([x for x in samples if row[x] > cutoff])) / len(samples) < frac:
+            toDrop.append(index)
+
+    transitionList = transitionList.drop(toDrop,axis=0)
+
+    transitionList["Precursor Name"] = ["unknown " + str(index) for index, row in transitionList.iterrows()]
+    transitionList["Explicit Retention Time"] = [row["rt"] for index, row in
+                                                 transitionList.iterrows()]
+    polMapper = {"Positive": 1, "Negative": -1}
+    transitionList["Precursor Charge"] = [polMapper[polarity] for index, row in transitionList.iterrows()]
+    transitionList["Precursor m/z"] = [row["mz"] for index,row in transitionList.iterrows()]
+    transitionList["Molecule List Name"] = [moleculeListName for _ in range(len(transitionList))]
+    transitionList = transitionList[
+        ["Molecule List Name", "Precursor Name", "Precursor m/z", "Precursor Charge",
+         "Explicit Retention Time"]]
+
+    peakBoundariesSkyline = {}
+
+    # iterate through filenames and cpds
+    for fn in samples:
+        for index, row in transitionList.iterrows():
+            peakBoundariesSkyline[len(peakBoundariesSkyline)] = {"Min Start Time": peak_boundaries.at[index,fn][0],
+                                                   "Max End Time": peak_boundaries.at[index,fn][1],
+                                                   "Peptide Modified Sequence": row["Precursor Name"],
+                                                   "File Name": fn}
+
+    # format as df
+    peakBoundariesSkyline = pd.DataFrame.from_dict(peakBoundariesSkyline, orient="index")
+    peakBoundariesSkyline = peakBoundariesSkyline[["File Name", "Peptide Modified Sequence", "Min Start Time", "Max End Time"]]
+
+    return transitionList,peakBoundariesSkyline
+
+
+
+
+
 class PeakDetective():
     """
     Class for curation/detection of LC/MS peaks in untargerted metabolomics data
@@ -504,6 +544,8 @@ class PeakDetective():
                 peaks_curated[file].append(index)
         peaks_curated = {file: peaks.loc[peaks_curated[file], :] for file in peaks_curated}
 
+
+
         return peaks_curated,X,X_norm,tics,scores,numRemaining,peak_scores,performance,peak_intensities
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
@@ -613,23 +655,23 @@ class PeakDetective():
 
         return rois
 
-    def plot_classifier_interpretation(self,numPer = 100):
-        sal_image = np.zeros((100, self.resolution))
-        for col in range(self.resolution):
-            printProgressBar(col, self.resolution,prefix = "Building classification map",printEnd="")
-            for row in range(100):
-                X = np.random.random((numPer, self.resolution))
-                X[:, col] = float(row) / 100 * np.ones(X[:, col].shape)
-                tics = np.ones(numPer)
-                otherCols = [x for x in range(X.shape[1]) if x != col]
-                X[:, otherCols] = (1 - float(row) / 100) * X[:, otherCols] / X[:, otherCols].sum(axis=1)[:, np.newaxis]
-                scores = self.classifier([X, tics])[:, 1]
-                sal_image[row, col] = np.mean(scores)
-        plt.imshow(sal_image)
-        plt.xlabel("time")
-        plt.ylabel("relative intensity")
-        plt.colorbar(label="mean output score")
-        return sal_image
+    # def plot_classifier_interpretation(self,numPer = 100):
+    #     sal_image = np.zeros((100, self.resolution))
+    #     for col in range(self.resolution):
+    #         printProgressBar(col, self.resolution,prefix = "Building classification map",printEnd="")
+    #         for row in range(100):
+    #             X = np.random.random((numPer, self.resolution))
+    #             X[:, col] = float(row) / 100 * np.ones(X[:, col].shape)
+    #             tics = np.ones(numPer)
+    #             otherCols = [x for x in range(X.shape[1]) if x != col]
+    #             X[:, otherCols] = (1 - float(row) / 100) * X[:, otherCols] / X[:, otherCols].sum(axis=1)[:, np.newaxis]
+    #             scores = self.classifier([X, tics])[:, 1]
+    #             sal_image[row, col] = np.mean(scores)
+    #     plt.imshow(sal_image)
+    #     plt.xlabel("time")
+    #     plt.ylabel("relative intensity")
+    #     plt.colorbar(label="mean output score")
+    #     return sal_image
 
     def detectPeaks(self,rawData,rois,cutoff=0.5,window=10,time=1.0,noiseCutoff=4):
         print("generating all EICs from ROIs...")
@@ -692,7 +734,33 @@ class PeakDetective():
 
         return peaks
 
+    def getPeakBoundaries(self,X,samples,peakScores,cutoff,frac):
+        peakBoundaries = pd.DataFrame(index=peakScores.index.values)
+        i = 0
+        toFill = []
+        goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
+        for samp in samples:
+            bounds = []
+            for index,row in peakScores.iterrows():
+                if index in goodInds:
+                    if row[samp] > cutoff:
+                        lb,rb = findPeakBoundaries(X[i])
+                        actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize,self.resolution)
+                        bounds.append((actualRts[lb],actualRts[rb]))
+                    else:
+                        bounds.append((-1,-1))
+                        toFill.append((index,samp))
+                else:
+                    bounds.append((-1, -1))
+            peakBoundaries[samp] = deepcopy(bounds)
 
+        peakBoundaries = peakBoundaries.loc[goodInds,:]
+        for index,samp in toFill:
+            widths = [x[1]-x[0] for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
+            centers = [np.mean(x) for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
+            peakBoundaries.at[index,samp] = (np.mean(centers) - np.mean(widths)/2,np.mean(centers) + np.mean(widths)/2 )
+
+        return peakBoundaries
 
 
 def validateInput(input):
