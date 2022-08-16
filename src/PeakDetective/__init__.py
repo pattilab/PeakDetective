@@ -127,14 +127,8 @@ def getIndexOfClosestValue(l,v):
     order.sort(key=lambda x:np.abs(l[x]-v))
     return order[0]
 
-def generateSkylineFiles(peak_scores,peak_boundaries,samples,polarity,cutoff=0.0,frac=0.0,moleculeListName = "XCMS peaks"):
+def generateSkylineFiles(peak_scores,peak_boundaries,samples,polarity,moleculeListName = "XCMS peaks"):
     transitionList = deepcopy(peak_scores)
-    toDrop = []
-    for index,row in transitionList.iterrows():
-        if float(len([x for x in samples if row[x] > cutoff])) / len(samples) < frac:
-            toDrop.append(index)
-
-    transitionList = transitionList.drop(toDrop,axis=0)
 
     transitionList["Precursor Name"] = ["unknown " + str(index) for index, row in transitionList.iterrows()]
     transitionList["Explicit Retention Time"] = [row["rt"] for index, row in
@@ -279,7 +273,7 @@ class PeakDetective():
         return X,X_signal,signal_tics
 
 
-    def curatePeaks(self,raw_datas,peaks,smooth_epochs = 10,class_epochs = 10,batch_size=64,validation_split=0.1,useSynthetic=True,numManualPerRound = 3,min_peaks = 100000,shift = .5,threshold=.5,alpha=0.05,noise=1000,autoClassify = True,inJupyter = True):
+    def curatePeaks(self,raw_datas,peaks,smooth_epochs = 10,class_epochs = 10,batch_size=64,validation_split=0.1,useSynthetic=True,numManualPerRound = 3,min_peaks = 100000,shift = .5,threshold=.5,alpha=0.05,noise=1000,numSynthetic = 200, autoClassify = True,inJupyter = True):
 
         #generate data matrix
         print("generating EICs...")
@@ -733,27 +727,27 @@ class PeakDetective():
 
         return peaks,X
 
-    def getPeakBoundaries(self,X,samples,peakScores,cutoff,frac):
+    def filterPeakListByScores(self,peakScores,samples,cutoff,frac):
+        goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
+        return peakScores.loc[goodInds,:]
+
+    def getPeakBoundaries(self,X,samples,peakScores,cutoff):
         peakBoundaries = pd.DataFrame(index=peakScores.index.values)
         i = 0
         toFill = []
-        goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
         for samp in samples:
             bounds = []
             for index,row in peakScores.iterrows():
-                if index in goodInds:
-                    if row[samp] > cutoff:
-                        lb,rb = findPeakBoundaries(X[i])
-                        actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
-                        bounds.append((actualRts[lb],actualRts[rb]))
-                    else:
-                        bounds.append((-1,-1))
-                        toFill.append((index,samp))
+                if row[samp] > cutoff:
+                    lb,rb = findPeakBoundaries(X[i])
+                    actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
+                    bounds.append((actualRts[lb],actualRts[rb]))
                 else:
-                    bounds.append((-1, -1))
+                    bounds.append((-1,-1))
+                    toFill.append((index,samp))
+
             peakBoundaries[samp] = deepcopy(bounds)
 
-        peakBoundaries = peakBoundaries.loc[goodInds,:]
         for index,samp in toFill:
             widths = [x[1]-x[0] for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
             centers = [np.mean(x) for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
