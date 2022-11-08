@@ -250,19 +250,27 @@ class PeakDetective():
 
         return X_signal, signal_tics
 
-    def generateSignalPeaks(self,peaks,raw_datas,widthFactor = 0.1,s2nFactor=.2,heightFactor = 1,min_signal = 1000,n=None):
+    def generateSignalPeaks(self,peaks,raw_datas,widthFactor = 0.1,heightFactor = 1,n=None):
         if type(n) == type(None):
             n = len(peaks)
         X_noise_peaks,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=n)
-        X_signal_peaks = self.generateGaussianPeaks(n*len(raw_datas),[[0.45,0.5],[0.5,0.55]],(1,1),widthFactor,heightFactor)
+        X_signal_peaks = self.generateGaussianPeaks(int(n*len(raw_datas)),[[0.45,0.5],[0.5,0.55]],(1,1),widthFactor,heightFactor)
 
-        s2n = s2nFactor * np.random.random(len(X_signal_peaks))
-        s2nInv = 1 - s2n
+        #s2n = s2nFactor * np.random.random(len(X_signal_peaks))
+        #s2nInv = 1 - s2n
 
-        signal_tics = np.array([max([min_signal,t*(1/x-1)]) for t,x in zip(noise_tics,s2n)])
+        samp = peaks.loc[rd.choices(list(peaks.index.values),k=int(np.ceil(n))),:]
+        mzs = list(samp["mz"].values)
+        rt_starts = [row["rt"] - self.windowSize/2 for _,row in samp.iterrows()]
+        rt_ends = [row["rt"] + self.windowSize/2 for _,row in samp.iterrows()]
 
-        X_noise = s2n[:, np.newaxis] * X_noise_peaks
-        X_signal = s2nInv[:, np.newaxis] * X_signal_peaks
+        tmp = self.makeDataMatrix(raw_datas,mzs,rt_starts,rt_ends)
+        tmp = tmp[:n*len(raw_datas),:]
+
+        signal_tics = np.array([integratePeak(x) for x in tmp])#np.array([max([min_signal,t*(1/x-1)]) for t,x in zip(noise_tics,s2n)])
+
+        X_noise = noise_tics[:, np.newaxis] * X_noise_peaks
+        X_signal = signal_tics[:, np.newaxis] * X_signal_peaks
 
         X = X_noise + X_signal
 
@@ -283,8 +291,8 @@ class PeakDetective():
         realEnd = len(mzs)
 
 
-        if 2 * len(peaks) * len(raw_datas) < min_peaks:
-            numToGet = int((min_peaks - 2 * len(peaks) * len(raw_datas))/len(raw_datas))
+        if  len(peaks) * len(raw_datas) + numSynthetic < min_peaks:
+            numToGet = int((min_peaks - len(peaks) * len(raw_datas) - numSynthetic)/len(raw_datas))
             print("insufficent # of EICs, shifting",numToGet,"random peaks", 0 , "to", shift , "minutes")
             tmp = list(range(len(mzs)))
             tmp = rd.choices(tmp,k=numToGet)
@@ -300,8 +308,8 @@ class PeakDetective():
         if useSynthetic:
             #generate synthetic data
             print("generating synthetic data...",end="")
-            X_signal,X_pure,signal_tics = self.generateSignalPeaks(peaks,raw_datas,n=int(len(peaks)/2))
-            X_noise,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=int(len(peaks)/2))
+            X_signal,X_pure,signal_tics = self.generateSignalPeaks(peaks,raw_datas,n=int(numSynthetic/2/len(raw_datas)))
+            X_noise,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=int(numSynthetic/2/len(raw_datas)))
             X_noise_pure = np.zeros(X_noise.shape)
 
             X = np.concatenate((X,X_signal,X_noise))
@@ -405,6 +413,7 @@ class PeakDetective():
 
             realInds = list(range(len(X_norm)))
 
+
         print("classifying noise peaks")
 
         noiseCount = 0
@@ -438,7 +447,6 @@ class PeakDetective():
                     numManualPerRound = len(order)
 
                 for ind in order[:numManualPerRound]:
-                    print(ind,len(X),len(X_smoothed),len(rt_starts),len(rt_ends),len(y))
                     val = self.labelPeak([X[ind],np.sum(X[ind]) * X_smoothed[ind]],rt_starts[ind],rt_ends[ind],inJupyter,y[ind][1])
                     y[ind,0] = 1-val
                     y[ind,1] = val
@@ -482,11 +490,11 @@ class PeakDetective():
                 history = keras.callbacks.History()
 
                 classifer.fit([X_merge[tmpTrainInds], tic_merge[tmpTrainInds]], y[tmpTrainInds], epochs=int(class_epochs),
-                              batch_size=batch_size, validation_split=validation_split, verbose=1,callbacks=[cb,history],
+                              batch_size=batch_size, validation_split=validation_split, verbose=0,callbacks=[cb,history],
                               validation_data=([X_merge[valInds], tic_merge[valInds]], y[valInds]))
 
 
-                #print("val loss:",history.history["val_loss"][cb.best_epoch],"val_mean_absolute_error",history.history["val_mean_absolute_error"][cb.best_epoch])
+                print("val loss:",history.history["val_loss"][cb.best_epoch],"val_mean_absolute_error:",history.history["val_mean_absolute_error"][cb.best_epoch],"numEpochs:",cb.best_epoch)
 
                 y[updatingInds] = classifer.predict([X_merge[updatingInds], tic_merge[updatingInds]])
 
