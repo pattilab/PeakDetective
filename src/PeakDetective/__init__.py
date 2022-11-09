@@ -281,6 +281,37 @@ class PeakDetective():
         return X,X_signal,signal_tics
 
 
+    def trainSmoother(self,peaks,raw_datas,numPeaks):
+        #generate data matrix
+        print("generating EICs...")
+        mzs = rd.choices(list(peaks["mz"].values),k=numPeaks)
+        rts = rd.choices(list(peaks["rt"].values),k=numPeaks)
+        rt_starts = [rt - self.windowSize/2 for rt in rts]
+        rt_ends = [rt + self.windowSize/2 for rt in rts]
+
+        X = self.makeDataMatrix(raw_datas,mzs,rt_starts,rt_ends)
+
+
+        #normalize matrix
+        X_norm = normalizeMatrix(X)
+        peak_areas = np.log10(np.array([np.max([2,integratePeak(x)]) for x in X]))
+
+        noiseInds = []
+        for x in range(len(peak_areas)):
+            if peak_areas[x] < noise:
+                noiseInds.append(x)
+
+        print("done")
+
+        #fit autoencoder
+        print("fitting smoother...")
+        smoother = Smoother(self.resolution)
+        smoother.fit(X_norm, X_norm, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split,verbose=1)
+
+        self.smoother = smoother
+        self.encoder = keras.Model(smoother.input, smoother.layers[7].output)
+        print("done")
+
     def curatePeaks(self,raw_datas,peaks,smooth_epochs = 10,class_epochs = 10,batch_size=64,validation_split=0.1,useSynthetic=True,numManualPerRound = 3,min_peaks = 100000,shift = .5,threshold=.5,alpha=0.05,noise=1000,numSynthetic = 200, autoClassify = True,inJupyter = True):
 
         #generate data matrix
@@ -310,46 +341,31 @@ class PeakDetective():
             print("generating synthetic data...",end="")
             X_signal,X_pure,signal_tics = self.generateSignalPeaks(peaks,raw_datas,n=int(numSynthetic/2/len(raw_datas)))
             X_noise,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=int(numSynthetic/2/len(raw_datas)))
-            X_noise_pure = np.zeros(X_noise.shape)
 
             X = np.concatenate((X,X_signal,X_noise))
-            X_norm_clean = np.concatenate((X,X_pure,X_noise_pure))
 
             print("done")
 
-
-
         #normalize matrix
         X_norm = normalizeMatrix(X)
-        X_norm_clean = normalizeMatrix(X_norm_clean)
-        apexInd = int(np.floor(X_norm.shape[1]/2))
-        tics = np.log10(np.array([np.max([2, np.sum(x)]) for x in X]))
-        #ticsApex = np.log10(np.array([np.max([2,x[apexInd]]) for x in X]))
-        ticsApex = np.log10(np.array([np.max([2,integratePeak(x)]) for x in X]))
-
+        peak_areas = np.log10(np.array([np.max([2,integratePeak(x)]) for x in X]))
 
         noiseInds = []
-        for x in range(len(tics)):
-            if np.power(10,tics[x]) * np.max(X_norm[x]) < noise:
-            #if np.power(10,tics[x]) < noise:
+        for x in range(len(peak_areas)):
+            if peak_areas[x] < noise:
                 noiseInds.append(x)
-
-
-        X_norm_clean[noiseInds] = np.zeros(X_norm_clean[noiseInds].shape)
-
-
-        #X_norm_with_noise = normalizeMatrix(X + np.random.normal(noise,noise/2,X.shape))
 
         print("done")
 
         #fit autoencoder
         print("fitting smoother...")
         smoother = Smoother(self.resolution)
-        smoother.fit(X_norm, X_norm_clean, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split,verbose=1)#,sample_weight=np.power(10,tics))
-        #smoother.fit(X, X, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split)
+        smoother.fit(X_norm, X_norm, epochs=smooth_epochs, batch_size=batch_size, validation_split=validation_split,verbose=1)
+
         self.smoother = smoother
         self.encoder = keras.Model(smoother.input, smoother.layers[7].output)
         print("done")
+
 
         indsToKeep = []
         start = 0
@@ -365,15 +381,9 @@ class PeakDetective():
         rt_ends = rt_ends_tmp
         X_norm = X_norm[indsToKeep]
         X = X[indsToKeep]
+        peak_areas = peak_areas[indsToKeep]
 
         if useSynthetic:
-            #generate synthetic data
-            #print("generating synthetic data...",end="")
-            #X_signal,signal_tics = self.generateSignalPeaks(peaks,raw_datas,n=int(len(peaks)/2))
-            #X_noise,noise_tics = self.generateFalsePeaks(peaks,raw_datas,n=int(len(peaks)/2))
-
-            # signal_tics = np.log10(np.array([np.max([2, signal_tics[x] * X_signal[x,apexInd]]) for x in range(len(X_signal))]))
-            # noise_tics = np.log10(np.array([np.max([2, noise_tics[x] * X_noise[x,apexInd]]) for x in range(len(X_noise))]))
 
             signal_tics = np.log10(np.array([np.max([2, integratePeak(signal_tics[x] * X_signal[x])]) for x in range(len(X_signal))]))
             noise_tics = np.log10(np.array([np.max([2, integratePeak(noise_tics[x] * X_noise[x])]) for x in range(len(X_noise))]))
