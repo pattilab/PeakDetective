@@ -418,6 +418,7 @@ class PeakDetective():
 
             else:
                 doMore = False
+            i += 1
 
 
     def classifyMatrix(self,X):
@@ -435,7 +436,7 @@ class PeakDetective():
         rts =  peaks["rt"].values
 
         X = self.makeDataMatrix(raw_datas,mzs,rts)
-        peak_areas = np.log10(np.array([np.max([2, integratePeak(x)]) for x in X]))
+        peak_areas = [integratePeak(x) for x in X]
 
         y = self.classifyMatrix(X)
 
@@ -461,7 +462,7 @@ class PeakDetective():
         return peak_curated,peak_scores,peak_intensities
 
     def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=10, noiseCutoff=4):
-        rois = self.roiDetection(self, rawDatas, intensityCutoff=intensityCutoff, numDataPoints=numDataPoints)
+        rois = self.roiDetection(rawDatas, intensityCutoff=intensityCutoff, numDataPoints=numDataPoints)
 
         print("generating all EICs from ROIs...")
         peaks = []
@@ -503,14 +504,8 @@ class PeakDetective():
                     files.append(rawData.filename)
 
         tics = np.log10(np.array([np.max([2, integratePeak(x)]) for x in X]))
-        X = normalizeMatrix(X)
-        print("done, ", len(X), " EICs generated")
-        print("smoothing EICs...")
-        X = self.encoder.predict(X, verbose=1)
 
-        print("done")
-        print("classifying peaks...")
-        y = self.classifier.predict([X, tics], verbose=1)[:, 1]
+        y = self.classifyMatrix(X)[:, 1]
         print("done")
         for mz, rt,filename, score, tic in zip(mzs, rts,files, y, tics):
             if score > cutoff and tic > noiseCutoff:
