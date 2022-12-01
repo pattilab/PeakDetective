@@ -274,8 +274,6 @@ class PeakDetective():
         print("generating EICs...")
         mzs = rd.choices(list(peaks["mz"].values),k=int(numPeaks/len(raw_datas)))
         rts = rd.choices(list(peaks["rt"].values),k=int(numPeaks/len(raw_datas)))
-        rt_starts = [rt - self.windowSize/2 for rt in rts]
-        rt_ends = [rt + self.windowSize/2 for rt in rts]
 
         X = self.makeDataMatrix(raw_datas,mzs,rts)
 
@@ -451,6 +449,10 @@ class PeakDetective():
             for index in peaks.index.values:
                 keys.append([raw.filename, index])
 
+        transitionLists = self.getPeakBoundaries(X, [raw.filename for raw in raw_datas], peak_scores, threshold)
+        for raw in raw_datas:
+            peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
+
         for [file, index], score, intensity in zip(keys, y[:, 1], peak_areas):
             peak_scores.at[index, file] = score
             peak_intensities.at[index, file] = intensity
@@ -602,25 +604,29 @@ class PeakDetective():
         peakBoundaries = pd.DataFrame(index=peakScores.index.values)
         i = 0
         toFill = []
+        transitionLists = {}
         for samp in samples:
+            peakBoundaries = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt_start","rt_end"])
             bounds = []
             for index,row in peakScores.iterrows():
                 if row[samp] > cutoff:
                     lb,rb = findPeakBoundaries(X[i])
                     actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
-                    bounds.append((actualRts[lb],actualRts[rb]))
+                    bounds.append([actualRts[lb],actualRts[rb]])
                 else:
-                    bounds.append((-1,-1))
+                    bounds.append([-1,-1])
                     toFill.append((index,samp))
-
-            peakBoundaries[samp] = deepcopy(bounds)
+            peakBoundaries["mz"] = peakScores["mz"].values
+            peakBoundaries[["rt_start","rt_end"]] = deepcopy(np.array(bounds))
+            transitionLists[samp] = peakBoundaries
 
         for index,samp in toFill:
             widths = [x[1]-x[0] for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
             centers = [np.mean(x) for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
-            peakBoundaries.at[index,samp] = (np.mean(centers) - np.mean(widths)/2,np.mean(centers) + np.mean(widths)/2 )
+            transitionLists[samp].at[index,"rt_start"] = np.mean(centers) - np.mean(widths)/2
+            transitionLists[samp].at[index,"rt_end"] = np.mean(centers) + np.mean(widths)/2
 
-        return peakBoundaries
+        return transitionLists
 
 
 def validateInput(input):
