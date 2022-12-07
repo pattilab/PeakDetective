@@ -3,13 +3,13 @@ from setuptools import setup, find_packages
 setup(
     name='PeakDetective',  # How you named your package folder (MyLib)
     packages=["PeakDetective"],  # Chose the same as "name"
-    version='0.0.9',  # Start with a small number and increase it with every change you make
+    version='0.1.0',  # Start with a small number and increase it with every change you make
     license='MIT',  # Chose a license from here: https://help.github.com/articles/licensing-a-repository
     description='Curates and detects LC/MS peaks in metabolomics datasets',  # Give a short description about your library
     author='Ethan Stancliffe',  # Type in your name
     author_email='estancl1234@gmail.com',  # Type in your E-Mail
     url='https://github.com/e-stan/PeakDetective/',  # Provide either the link to your github or to your website
-    download_url='https://github.com/e-stan/PeakDetective/archive/v0.0.9.tar.gz',  # I explain this later on
+    download_url='https://github.com/e-stan/PeakDetective/archive/v0.1.0.tar.gz',  # I explain this later on
     keywords=['Metabolomics', 'LC/MS', "Deep Learning","semi-supervised learning","machine learning"],  # Keywords that define your package best
     install_requires=[  # I get to this in a second
         'pyteomics',

@@ -600,8 +600,7 @@ class PeakDetective():
         goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
         return peakScores.loc[goodInds,:]
 
-    def getPeakBoundaries(self,X,samples,peakScores,cutoff):
-        peakBoundaries = pd.DataFrame(index=peakScores.index.values)
+    def getPeakBoundaries(self,X,samples,peakScores,cutoff,defaultWidth=0.5):
         i = 0
         toFill = []
         transitionLists = {}
@@ -617,15 +616,19 @@ class PeakDetective():
                     bounds.append([-1,-1])
                     toFill.append((index,samp))
             peakBoundaries["mz"] = peakScores["mz"].values
+            peakBoundaries["rt"] = peakScores["rt"].values
             peakBoundaries[["rt_start","rt_end"]] = deepcopy(np.array(bounds))
             transitionLists[samp] = peakBoundaries
 
         for index,samp in toFill:
-            widths = [x[1]-x[0] for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
-            centers = [np.mean(x) for x in peakBoundaries.loc[index,:] if x[0] > 0 and x[1] > 0]
-            transitionLists[samp].at[index,"rt_start"] = np.mean(centers) - np.mean(widths)/2
-            transitionLists[samp].at[index,"rt_end"] = np.mean(centers) + np.mean(widths)/2
-
+            widths = [transitionLists[x].at[index,"rt_end"] - transitionLists[x].at[index,"rt_start"] for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
+            centers = [np.mean([transitionLists[x].at[index,"rt_end"],transitionLists[x].at[index,"rt_start"]]) for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
+            if len(widths) > 0:
+                transitionLists[samp].at[index,"rt_start"] = np.mean(centers) - np.mean(widths)/2
+                transitionLists[samp].at[index,"rt_end"] = np.mean(centers) + np.mean(widths)/2
+            else:
+                transitionLists[samp].at[index,"rt_start"] = transitionLists[samp].at[index,"rt"] - defaultWidth/2
+                transitionLists[samp].at[index,"rt_end"] = transitionLists[samp].at[index,"rt"] + defaultWidth/2
         return transitionLists
 
 
