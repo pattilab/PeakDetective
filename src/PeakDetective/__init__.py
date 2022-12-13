@@ -16,6 +16,9 @@ import IPython.display
 from copy import deepcopy
 import sklearn.metrics as met
 import pandas as pd
+from scipy.spatial.distance import euclidean
+from fastdtw import fastdtw
+from scipy.interpolate import interp1d
 
 
 #Utility functions:
@@ -193,19 +196,21 @@ class PeakDetective():
             q.put(0)
         return out
 
-    def makeDataMatrix(self,rawdatas,mzs,rts,smoothing=0):
+    def makeDataMatrix(self,rawdatas,mzs,rts,smoothing=0,align=False):
         rtstarts = [rt - self.windowSize/2 for rt in rts]
         rtends = [rt + self.windowSize/2 for rt in rts]
         args = []
         numToGetPerProcess = int(len(rawdatas)*len(mzs)/float(self.numCores))
+        featInds = []
         for rawdata in rawdatas:
             tmpMzs = []
             tmpRtStarts = []
             tmpRTends = []
-            for mz,rtstart,rtend in zip(mzs,rtstarts,rtends):
+            for mz,rtstart,rtend,i in zip(mzs,rtstarts,rtends,range(len(mzs))):
                 tmpMzs.append(mz)
                 tmpRtStarts.append(rtstart)
                 tmpRTends.append(rtend)
+                featInds.append(i)
                 if len(tmpMzs) == numToGetPerProcess:
                     args.append([rawdata,tmpMzs,tmpRtStarts,tmpRTends,smoothing,self.resolution])
                     tmpMzs = []
@@ -215,7 +220,13 @@ class PeakDetective():
             if len(tmpMzs) > 0: args.append([rawdata, tmpMzs, tmpRtStarts, tmpRTends, smoothing,self.resolution])
 
         result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, self.numCores, "forming matrix", len(args))
-        return np.concatenate(result,axis=0)
+
+        result = np.concatenate(result,axis=0)
+
+        if align:
+            result = alignDataMatrix(result,featInds,True,self.numCores)
+
+        return result
 
     def generateGaussianPeaks(self,n, centerDist, numPeaksDist=(0,2), widthFactor=0.1, heightFactor=1):
         X_signal = np.zeros((n,self.resolution)) #self.generateNoisePeaks(X_norm, tics)
@@ -919,4 +930,44 @@ def integratePeak(peak):
     else:
         area = 0
     return area
+
+
+def alignPeaks(peaks,normalize=True,reference=0,q=None):
+    if normalize:
+        peaks_norm = [safeNormalize(x) for x in peaks]
+    else:
+        peaks_norm = deepcopy(peaks)
+
+    reference_peak = peaks_norm[reference]
+    ref = list(range(len(reference_peak)))
+    for x,peak in enumerate(peaks_norm):
+        if x > 0:
+            distance, path = fastdtw(reference_peak, peak, dist=euclidean)
+            f = interp1d([p[0] for p in path],[peaks[x][p[1]] for p in path])
+            peaks[x] = [f(i) for i in ref]
+
+    if type(q) != type(None):
+        q.put(0)
+
+    return peaks
+
+def alignDataMatrix(matrix,peakInds,normalize=True,numCores=1):
+    uniquePeaks = list(set(peakInds))
+    order = [[] for _ in uniquePeaks]
+    args = [[[],normalize,0] for _ in uniquePeaks]
+    for i,peak,ind in zip(range(len(matrix)),matrix,peakInds):
+        args[ind][0].append(peak)
+        order[ind].append(i)
+    result = startConcurrentTask(alignPeaks,args,numCores,"aligning EICs",len(uniquePeaks))
+    for peaks,inds in zip(result,order):
+        for peak,ind in zip(peaks,inds):
+            matrix[ind] = peak
+    return matrix
+
+
+
+
+
+
+
 

@@ -18,6 +18,7 @@ setup(
         "matplotlib",
         "tensorflow",
         "scikit-learn",
+        "fastdtw"
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',

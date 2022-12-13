@@ -15,10 +15,12 @@ mzDiff <- as.numeric(args[10])#.0001
 frac <- as.numeric(args[11])
 fn <- args[6]
 
-print(pathData)
-print(getwd())
-setwd(pathData)
+
 files = list.files(pattern = "*.mzML")
+
+print('!!!!!!!!!!!!!!!!!!!!!!!TESTING')
+print(files)
+
 numFiles = length(files)
 
 xs = readMSData(files,mode="onDisk",msLevel=1)
@@ -34,14 +36,32 @@ pdp <- PeakDensityParam(sampleGroups = rep(1,numFiles),
 
 xs2 = groupChromPeaks(xs2,param=pdp)
 
-xs3= fillChromPeaks(xs2)
+
+## S4 method for signature 'OnDiskMSnExp,ObiwarpParam'
+#xs2 = adjustRtime(xs2, ObiwarpParam(binSize = 1,))
+
+#xs2 = groupChromPeaks(xs2,param=pdp)
+
+xs3 = fillChromPeaks(xs2)
+
+#format results
+peakInfo = featureDefinitions(xs3)
+intensities = featureValues(xs3)
+peaktable = merge(peakInfo, intensities,
+                          by = 'row.names', all = TRUE)
+
+#write output
+drop <- c("peakidx")
+write.table(peaktable[,!(names(peaktable) %in% drop)],fn,sep="\t",row.names=FALSE,col.names=TRUE)
+
+
 #xs3 = xs2
 
-xs4 = as(xs3, "xcmsSet")
+#xs4 = as(xs3, "xcmsSet")
 
-ann = annotate(xs4,polarity=charge,maxcharge=2,ppm=ppm)
+#ann = annotate(xs4,polarity=charge,maxcharge=2,ppm=ppm)
 
-peaks = getPeaklist(ann)
+#peaks = getPeaklist(ann)
 
-write.csv(peaks,fn)
+#write.csv(peaks,fn)
        

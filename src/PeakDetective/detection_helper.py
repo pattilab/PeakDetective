@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import scipy.stats as stats
 import os
 
 class PeakList():
@@ -33,13 +34,13 @@ class PeakList():
 
 
     def readXCMSPeakList(self,filename,key=".mzML"):
-        data = pd.read_csv(filename,index_col=0)
+        data = pd.read_csv(filename,index_col=0,sep="\t")
         data_form = {}
         self.sampleCols = [x for x in data.columns.values if key in x]
         for col in self.sampleCols:
             data[col] = data[col].fillna(0)
         for index,row in data.iterrows():
-            data_form[index] = {"mz":row["mz"],"rt_start":row["rtmin"]/60,"rt_end":row["rtmax"]/60,"isotope_xcms":row["isotopes"],"adduct_xcms":row["adduct"],"peak group":row["pcgroup"]}
+            data_form[index] = {"mz":row["mz"],"rt":row["rt"]/60,"rt_start":row["rtmin"]/60,"rt_end":row["rtmax"]/60}#,"isotope_xcms":row["isotopes"],"adduct_xcms":row["adduct"],"peak group":row["pcgroup"]}
             for col in self.sampleCols:
                data_form[index][col] = row[col]
                
@@ -51,12 +52,30 @@ class PeakList():
             ppm) + " " + str(peakWidth[0]) + " " + str(peakWidth[1]) + " " + fn + " " + str(noise) + " " + str(s2n) + " " + str(prefilter) + " " + str(mzDiff) + " " + str(minFrac))
         self.readXCMSPeakList(path + fn)
         
-    def filterAdductsIsotopes(self,adductsToKeep = ["[M+H]","[M-H]"],isotopesToKeep = ["[M]"]):
-        goodRows = []
+    #def filterAdductsIsotopes(self,adductsToKeep = ["[M+H]","[M-H]"],isotopesToKeep = ["[M]"]):
+    #    goodRows = []
+    #    for index,row in self.peakList.iterrows():
+    #        if (pd.isna(row["adduct_xcms"]) or any(x in row["adduct_xcms"] for x in adductsToKeep)) and (pd.isna(row["isotope_xcms"]) or any(x in row["isotope_xcms"] for x in isotopesToKeep)):
+    #            goodRows.append(index)
+    #    self.peakList = self.peakList.loc[goodRows,:]
+
+    def removeRedundancy(self,corrThresh,rtThresh):
+        groups = []
+        anchors = []
         for index,row in self.peakList.iterrows():
-            if (pd.isna(row["adduct_xcms"]) or any(x in row["adduct_xcms"] for x in adductsToKeep)) and (pd.isna(row["isotope_xcms"]) or any(x in row["isotope_xcms"] for x in isotopesToKeep)):
-                goodRows.append(index)
-        self.peakList = self.peakList.loc[goodRows,:]
+            unique = True
+            for i,inds,[rt,vec] in zip(range(len(groups)),groups,anchors):
+                if np.abs(rt-row["rt"]) < rtThresh:
+                    r,p = stats.pearsonr(vec,row[self.sampleCols].values)
+                    if r > corrThresh:
+                        unique = False
+                        groups[i].append(index)
+                        break
+            if unique:
+                groups.append([index])
+                anchors.append([row["rt"],row[self.sampleCols].values])
+        print(len(groups))
+
         
     def backgroundSubtract(self,blank_keys,sample_keys,factor=3):
         goodRows = []
