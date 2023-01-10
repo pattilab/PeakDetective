@@ -15,11 +15,9 @@ mzDiff <- as.numeric(args[10])#.0001
 frac <- as.numeric(args[11])
 fn <- args[6]
 
+setwd(pathData)
 
 files = list.files(pattern = "*.mzML")
-
-print('!!!!!!!!!!!!!!!!!!!!!!!TESTING')
-print(files)
 
 numFiles = length(files)
 
@@ -37,10 +35,9 @@ pdp <- PeakDensityParam(sampleGroups = rep(1,numFiles),
 xs2 = groupChromPeaks(xs2,param=pdp)
 
 
-## S4 method for signature 'OnDiskMSnExp,ObiwarpParam'
-#xs2 = adjustRtime(xs2, ObiwarpParam(binSize = 1,))
+xs2 = adjustRtime(xs2, ObiwarpParam(binSize = 1,))
 
-#xs2 = groupChromPeaks(xs2,param=pdp)
+xs2 = groupChromPeaks(xs2,param=pdp)
 
 xs3 = fillChromPeaks(xs2)
 

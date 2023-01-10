@@ -19,6 +19,8 @@ import pandas as pd
 from scipy.spatial.distance import euclidean
 from fastdtw import fastdtw
 from scipy.interpolate import interp1d
+import pickle as pkl
+import os
 
 
 #Utility functions:
@@ -176,6 +178,26 @@ class PeakDetective():
         self.classifier = Classifier(resolution)
         self.encoder = keras.Model(self.smoother.input, self.smoother.layers[7].output)
 
+    def save(self,path):
+        if not os.path.exists(path): os.mkdir(path)
+        pkl.dump([self.resolution,self.windowSize],open(path+"parameters.pd","wb"))
+        self.smoother.save(path + "smoother.h5")
+        self.classifier.save(path+"classifier.h5")
+        self.encoder.save(path+"encoder.h5")
+
+
+    def load(self,path):
+        try:
+            [self.resouton,self.windowSize] = pkl.load(open(path + "parameters.pd","rb"))
+            self.smoother = keras.models.load_model(path+"smoother.h5")
+            self.classifier = keras.models.load_model(path+"classifier.h5")
+            self.encoder = keras.models.load_model(path+"encoder.h5")
+
+        except:
+            print("Error: pd and h5 files were not found, check path")
+
+
+
     def plot_overlayedEIC(self,rawdatas,mz,rt_start,rt_end,smoothing=0,alpha=0.3):
         ts = np.linspace(rt_start,rt_end,self.resolution)
         for data in rawdatas:
@@ -302,7 +324,7 @@ class PeakDetective():
         self.encoder = keras.Model(smoother.input, smoother.layers[7].output)
         print("done")
 
-    def trainClassifier(self,X,y,X_val,y_val,class_epochs,batch_size,restarts):
+    def trainClassifier(self,X,y,X_val,y_val,min_epochs,max_epochs,batch_size,restarts):
 
         X_norm = normalizeMatrix(X)
         tics = np.log10(np.array([np.max([2, integratePeak(x)]) for x in X]))
@@ -311,6 +333,7 @@ class PeakDetective():
         X_tmp = normalizeMatrix(X_val)
         tic_val = np.log10(np.array([np.max([2, integratePeak(x)]) for x in X_val]))
         X_val = self.encoder.predict(X_tmp)
+
 
         bestLoss = np.inf
         bestWeights = -1
@@ -335,13 +358,19 @@ class PeakDetective():
 
             classifer = ClassifierLatent(X_latent.shape[1])
 
-            classifer.fit([X_latent, tics], y, epochs=int(class_epochs),
+            if min_epochs > 0:
+                classifer.fit([X_latent,tics],y,epochs=int(min_epochs),batch_size=batch_size,verbose=0,
+                              validation_data=([X_val, tic_val], y_val))
+
+            classifer.fit([X_latent, tics], y, epochs=int(max_epochs-min_epochs),
                           batch_size=batch_size, verbose=0, callbacks=[cb, history],
                           validation_data=([X_val, tic_val], y_val))
 
             valLoss = history.history["val_loss"][cb.best_epoch]
             valErr = history.history["val_mean_absolute_error"][cb.best_epoch]
             bestEpoch = cb.best_epoch
+
+
             if valLoss < bestLoss:
                 bestLoss = valLoss
                 bestWeights = classifer.get_weights()
@@ -349,7 +378,7 @@ class PeakDetective():
                 bestBestEpoch = bestEpoch
                 trainLoss = history.history["loss"][cb.best_epoch]
                 trainErr = history.history["mean_absolute_error"][cb.best_epoch]
-        print("loss:",trainLoss,"mean_absolute_error:",trainErr,"val loss:", bestLoss, "val_mean_absolute_error:",bestValErr, "numEpochs:", bestBestEpoch)
+        print("loss:",trainLoss,"mean_absolute_error:",trainErr,"val loss:", bestLoss, "val_mean_absolute_error:",bestValErr, "numEpochs:", min_epochs + bestBestEpoch)
 
         classifer.set_weights(bestWeights)
 
@@ -357,7 +386,7 @@ class PeakDetective():
 
         return history
 
-    def trainClassifierActive(self,X,X_labeled,y_labeled,class_epochs,batch_size,restarts,numVal = 10,numManualPerRound=3,inJupyter=True):
+    def trainClassifierActive(self,X,X_labeled,y_labeled,min_epochs,max_epochs,batch_size,restarts,numVal = 10,numManualPerRound=3,inJupyter=True):
         trainingInds = []
 
         valInds = list(range(len(X)))
@@ -377,10 +406,11 @@ class PeakDetective():
             y_val[ind, 0] = 1 - val
             y_val[ind, 1] = val
 
+
         if len(X_labeled) > 0:
             self.trainClassifier(X_labeled,
                                  y_labeled,
-                                 X_val,y_val, class_epochs, batch_size, restarts)
+                                 X_val,y_val, min_epochs,max_epochs, batch_size, restarts)
 
         y[updatingInds] = self.classifyMatrix(X[updatingInds])
 
@@ -404,11 +434,15 @@ class PeakDetective():
                     trainingInds.append(ind)
                     updatingInds.remove(ind)
 
-                X_train = np.concatenate((X[trainingInds],X_labeled),axis=0)
-                y_train = np.concatenate((y[trainingInds],y_labeled),axis=0)
+                if len(X_labeled) > 0:
+                    X_train = np.concatenate((X[trainingInds],X_labeled),axis=0)
+                    y_train = np.concatenate((y[trainingInds],y_labeled),axis=0)
+                else:
+                    X_train = X[trainingInds]
+                    y_train = y[trainingInds]
 
                 if len(X_train) > 0:
-                    self.trainClassifier(X_train,y_train,X_val,y_val,class_epochs,batch_size,restarts)
+                    self.trainClassifier(X_train,y_train,X_val,y_val,min_epochs,max_epochs,batch_size,restarts)
 
                 y[updatingInds] = self.classifyMatrix(X[updatingInds])
 
@@ -464,9 +498,8 @@ class PeakDetective():
         for raw in raw_datas:
             peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
 
-        for [file, index], score, intensity in zip(keys, y[:, 1], peak_areas):
+        for [file, index], score in zip(keys, y[:, 1]):
             peak_scores.at[index, file] = score
-            peak_intensities.at[index, file] = intensity
             val = 0
             if score > threshold:
                 val = 1
@@ -474,64 +507,108 @@ class PeakDetective():
 
         return peak_curated,peak_scores,peak_intensities
 
-    def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=10, noiseCutoff=4):
+    def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=0.05,align=True):
         rois = self.roiDetection(rawDatas, intensityCutoff=intensityCutoff, numDataPoints=numDataPoints)
 
         print("generating all EICs from ROIs...")
-        peaks = []
         dt = self.windowSize / self.resolution
         tmpRes = int(math.ceil((rawDatas[0].rts[-1] - rawDatas[0].rts[0] + self.windowSize) / dt))
         oldRes = int(self.resolution)
         oldwindow = float(self.windowSize)
         self.resolution = tmpRes
         self.windowSize = rawDatas[0].rts[-1] + self.windowSize/2 - rawDatas[0].rts[0] + self.windowSize/2
-        rts = [rawDatas[0].rts[-1] + self.windowSize / 2 for _ in rois]
-        X_tot = self.makeDataMatrix(rawDatas, rois, rts, 0)
+        rts = [(rawDatas[0].rts[-1] + rawDatas[0].rts[0])/2 for _ in rois]
+        X_tot = self.makeDataMatrix(rawDatas, rois, rts, 0,align)
         self.resolution = oldRes
         self.windowSize = oldwindow
 
-        numPoints = math.floor(float(tmpRes - self.resolution) / window)
 
-        X = np.zeros((int(numPoints * len(rois)), self.resolution))
+        numPoints = 0
+        rt = rawDatas[0].rts[0]
+        while(rt <= rawDatas[0].rts[-1]):
+            numPoints += 1
+            rt += window
 
-        counter = 0
+        X = np.zeros((int(numPoints * len(rois) * len(rawDatas)), self.resolution))
+
 
         mzs = []
         rts = []
         files = []
+        featInds = []
 
-        start = 0
-        end = self.resolution
+
+        counter = 0
+        trueDt = tmpRes / (rawDatas[0].rts[-1] + self.windowSize/2 - rawDatas[0].rts[0] + self.windowSize/2)
+        stride = int(np.floor(window * trueDt))
 
         for rawData in rawDatas:
-            rt = float(rawData.rts[0])
+            i = 0
             for row in range(len(rois)):
+                rt = float(rawDatas[0].rts[0])
+                start = 0
+                end = start + self.resolution
                 for _ in range(numPoints):
-                    X[counter, :] = X_tot[row, start:end]
+                    if end >= X_tot.shape[1]:
+                        n = X_tot.shape[1] - start
+                        print(start,end,n,X.shape,X_tot.shape,numPoints)
+                        X[counter,:n]  = X_tot[row,start:]
+                    else:
+                        X[counter, :] = X_tot[row, start:end]
                     counter += 1
-                    start += window
-                    end += window
+                    start += stride
+                    end += stride
                     mzs.append(rois[row])
                     rts.append(rt)
-                    rt += dt * window
+                    rt += window
                     files.append(rawData.filename)
+                    featInds.append(i)
+                    i += 1
 
-        tics = np.log10(np.array([np.max([2, integratePeak(x)]) for x in X]))
+        X = X[:counter]
+
+        print(len(X),"EICs constructed for evaluation")
+
+        peak_scores = pd.DataFrame(index=range(len(set(featInds))))
+        orderedMzs = []
+        orderedRts = []
+
+        rt = float(rawDatas[0].rts[0])
+        for row in range(len(rois)):
+            for _ in range(numPoints):
+                orderedMzs.append(rois[row])
+                orderedRts.append(rt)
+                rt += window
+
+        peak_scores["mz"] = orderedMzs
+        peak_scores["rt"] = orderedRts
+
+        for rawData in rawDatas:
+            peak_scores[rawData.filename] = 0
 
         y = self.classifyMatrix(X)[:, 1]
         print("done")
-        for mz, rt,filename, score, tic in zip(mzs, rts,files, y, tics):
-            if score > cutoff and tic > noiseCutoff:
-                peaks.append([mz, rt,filename, score,tic])
 
-        if len(peaks) > 0:
-            peaks = pd.DataFrame(data=np.array(peaks), columns=["mz", "rt","sample","score","peak area"])
-        else:
-            peaks = pd.DataFrame(columns=["mz", "rt","sample","score","peak area"])
+        goodInds = []
+        for id,filename, score in zip(featInds,files, y):
+            if score > cutoff:
+                goodInds.append(id)
+            peak_scores.at[id,filename] = score
+        goodInds = list(set(goodInds))
+        goodInds.sort()
 
-        print(len(peaks), " peaks found")
+        peak_scores = peak_scores.loc[goodInds,:]
+        peak_scores = peak_scores.reset_index()
 
-        return peaks, X
+        peak_intensities = deepcopy(peak_scores)
+
+        print(len(peak_scores), " peaks found")
+
+        transitionLists = self.getPeakBoundaries(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
+        for raw in rawDatas:
+            peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
+
+        return peak_scores, peak_intensities
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
@@ -555,6 +632,7 @@ class PeakDetective():
         plt.show()
         print("Enter classification (1=True Peak, 0=Artifact): ")
         val = input()
+
         while not validateInput(val):
             print("invalid classification: ")
             val = input()
@@ -626,6 +704,7 @@ class PeakDetective():
                 else:
                     bounds.append([-1,-1])
                     toFill.append((index,samp))
+                i += 1
             peakBoundaries["mz"] = peakScores["mz"].values
             peakBoundaries["rt"] = peakScores["rt"].values
             peakBoundaries[["rt_start","rt_end"]] = deepcopy(np.array(bounds))
@@ -735,7 +814,7 @@ class rawData():
         transitionList[self.filename] = areas
         return transitionList
 
-    def interpolate_data(self,mz,rt_start,rt_end,smoothing=1):
+    def interpolate_data(self,mz,rt_start,rt_end,smoothing=0):
         rts,intensity = self.extractEIC(mz,rt_start,rt_end)
         if len(rts) > 3:
             smoothing = smoothing * len(rts) * np.max(intensity)
@@ -943,8 +1022,25 @@ def alignPeaks(peaks,normalize=True,reference=0,q=None):
     for x,peak in enumerate(peaks_norm):
         if x > 0:
             distance, path = fastdtw(reference_peak, peak, dist=euclidean)
-            f = interp1d([p[0] for p in path],[peaks[x][p[1]] for p in path])
+            xs = []
+            ys = []
+
+            prev = path[0][0]
+            tmp = [peaks[x][path[0][1]]]
+            for p1,p2 in path[1:]:
+                if p1 != prev:
+                    xs.append(prev)
+                    ys.append(np.mean(tmp))
+                    tmp = []
+                tmp.append(peaks[x][p2])
+                prev = p1
+            xs.append(prev)
+            ys.append(np.mean(tmp))
+
+
+            f = interp1d(xs,ys,fill_value=0.0,bounds_error=False)
             peaks[x] = [f(i) for i in ref]
+
 
     if type(q) != type(None):
         q.put(0)

@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 import os
+import uuid
+from . import printProgressBar, startConcurrentTask
 
 class PeakList():
     def __init__(self,peakList = None):
@@ -40,7 +42,7 @@ class PeakList():
         for col in self.sampleCols:
             data[col] = data[col].fillna(0)
         for index,row in data.iterrows():
-            data_form[index] = {"mz":row["mz"],"rt":row["rt"]/60,"rt_start":row["rtmin"]/60,"rt_end":row["rtmax"]/60}#,"isotope_xcms":row["isotopes"],"adduct_xcms":row["adduct"],"peak group":row["pcgroup"]}
+            data_form[index] = {"mz":row["mzmed"],"rt":row["rtmed"]/60,"rt_start":row["rtmin"]/60,"rt_end":row["rtmax"]/60}#,"isotope_xcms":row["isotopes"],"adduct_xcms":row["adduct"],"peak group":row["pcgroup"]}
             for col in self.sampleCols:
                data_form[index][col] = row[col]
                
@@ -59,22 +61,38 @@ class PeakList():
     #            goodRows.append(index)
     #    self.peakList = self.peakList.loc[goodRows,:]
 
-    def removeRedundancy(self,corrThresh,rtThresh):
+    def removeRedundancy(self,corrThresh,rtThresh,polarity,ppm,numCores):
         groups = []
         anchors = []
         for index,row in self.peakList.iterrows():
             unique = True
             for i,inds,[rt,vec] in zip(range(len(groups)),groups,anchors):
                 if np.abs(rt-row["rt"]) < rtThresh:
-                    r,p = stats.pearsonr(vec,row[self.sampleCols].values)
-                    if r > corrThresh:
+                    if len(self.sampleCols) > 2:
+                        r,p = stats.pearsonr(vec,row[self.sampleCols].values)
+                        if r > corrThresh:
+                            unique = False
+                            groups[i].append(index)
+                            break
+                    else:
                         unique = False
                         groups[i].append(index)
                         break
             if unique:
                 groups.append([index])
                 anchors.append([row["rt"],row[self.sampleCols].values])
-        print(len(groups))
+
+        args = []
+        for i,g in enumerate(groups):
+            filt = self.peakList.loc[g,:]
+            args.append([filt,polarity,ppm])
+        result = startConcurrentTask(runMzUnity,args,numCores,"running mz.unity",len(groups))
+        self.peakList["uniqueIon"] = True
+        for res,g in zip(result,groups):
+            self.peakList.loc[g,res.columns.values] = res.values
+
+        self.peakList = self.peakList[self.peakList["uniqueIon"]]
+
 
         
     def backgroundSubtract(self,blank_keys,sample_keys,factor=3):
@@ -128,6 +146,24 @@ def mergePeakLists(peakLists,names,ppm=20,rtTol=.5):
     peakFounders = pd.DataFrame.from_dict(peakFounders,orient="index").transpose()
     mergedList = pd.concat((mergedList,peakFounders),axis=1,ignore_index=False)
     return mergedList
+
+def runMzUnity(df,polarity,ppm,q=None):
+    dir = os.path.dirname(__file__)
+    path = str(uuid.uuid4()) + ".csv"
+    if len(df) > 0:
+        df.to_csv(path)
+        os.system("Rscript " + os.path.join(dir, "mz_unity.R") + " " + path + " " + str(polarity) + " " + str(ppm) + " " + path)
+        df = pd.read_csv(path,index_col=0)
+        os.remove(path)
+
+    else:
+        df["uniqueIon"] = True
+
+    if type(q) != type(None):
+        q.put(0)
+
+    return df
+
             
         
         

@@ -4,8 +4,9 @@ library(dplyr)
 args = commandArgs(trailingOnly=TRUE)
 
 inputPath <- args[1]
-outPath <- args[3]
+outPath <- args[4]
 polarity <- as.integer(args[2])
+ppm <- as.numeric(args[3])
 
 #load data
 mz = read.csv(inputPath)
@@ -45,23 +46,23 @@ m1Ions = mz.unity.search(A = singleCharged,
 
 m1Ions = reindex(m1Ions,'^A$|^A.|^B$|^B.', singleCharged$row)
 
-m1Ions = unique(m1Ions$A)
+m1Ions = unique(m1Ions$B.1)
 
 #filterOutM1Ions 
-monoIso = singleCharged[which(!singleCharged$row %in% m1Ions),]
+monoIso = singleCharged[which(singleCharged$row %in% m1Ions),]
 
 
 #find adducts
-adduct = mz.unity.search(A = monoIso, 
-                       B = monoIso, 
-                       M = M.z, ppm = ppm, 
-                       BM.limits = cbind(M.min = c(2), M.max = c(2), B.n = c(1)))
-adduct = reindex(adduct,'^A$|^A.|^B$|^B.', monoIso$row)
+#adduct = mz.unity.search(A = monoIso,
+#                       B = monoIso,
+#                       M = M.z, ppm = ppm,
+#                       BM.limits = cbind(M.min = c(2), M.max = c(2), B.n = c(1)))
+#adduct = reindex(adduct,'^A$|^A.|^B$|^B.', monoIso$row)
 
-adduct = unique(adduct$A)
+#adduct = unique(adduct$A)
 
 #filter out adducts
-mIons = monoIso[which(!monoIso$row %in% adduct),]
+mIons = monoIso#[which(!monoIso$row %in% adduct),]
 
 
 #find neutral loses
@@ -82,7 +83,7 @@ mz$uniqueIon = mz$row %in% uniqueIons$row
 #filter cols
 mz = mz[,c(cols,"uniqueIon")]
 
-write.csv(mz,outPath)
+write.csv(mz,outPath,row.names=FALSE)
 
 
 
