@@ -699,6 +699,8 @@ class PeakDetective():
             for index,row in peakScores.iterrows():
                 if row[samp] > cutoff:
                     lb,rb = findPeakBoundaries(X[i])
+                    #lb = adjustedRt
+                    #rb = adjustedRt
                     actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
                     bounds.append([actualRts[lb],actualRts[rb]])
                 else:
@@ -805,14 +807,14 @@ class rawData():
         intensity = [np.sum([i for mz,i in self.data[rt].items() if mz > mz_start and mz < mz_end]) for rt in rts]
         return rts,intensity
 
-    def integrateTargets(self,transitionList):
-        areas = []
-        for index,row in transitionList.iterrows():
-            rts,intensity = self.extractEIC(row["mz"],row["rt_start"],row["rt_end"])
-            area = np.trapz(intensity,rts)
-            areas.append(area)
-        transitionList[self.filename] = areas
-        return transitionList
+    # def integrateTargets(self,transitionList):
+    #     areas = []
+    #     for index,row in transitionList.iterrows():
+    #         rts,intensity = self.extractEIC(row["mz"],row["rt_start"],row["rt_end"])
+    #         area = np.trapz(intensity,rts)
+    #         areas.append(area)
+    #     transitionList[self.filename] = areas
+    #     return transitionList
 
     def interpolate_data(self,mz,rt_start,rt_end,smoothing=0):
         rts,intensity = self.extractEIC(mz,rt_start,rt_end)
@@ -1019,6 +1021,7 @@ def alignPeaks(peaks,normalize=True,reference=0,q=None):
 
     reference_peak = peaks_norm[reference]
     ref = list(range(len(reference_peak)))
+
     for x,peak in enumerate(peaks_norm):
         if x > 0:
             distance, path = fastdtw(reference_peak, peak, dist=euclidean)
