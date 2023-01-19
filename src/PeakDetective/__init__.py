@@ -90,6 +90,7 @@ def take_closest(myList, myNumber):
         return before
 
 
+
 def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', printEnd="\r"):
     """
     Call in a loop to create terminal progress bar
@@ -126,11 +127,19 @@ def updateProgress(q, total,message = ""):
 
 def getIndexOfClosestValue(l,v):
     """
-    get index of list with closest value to v
+    get index of list with closest value to v, assumes l is sorted
     """
-    order = list(range(len(l)))
-    order.sort(key=lambda x:np.abs(l[x]-v))
-    return order[0]
+    pos = bisect_left(l, v)
+    if pos == 0:
+        return 0
+    if pos == len(l):
+        return pos - 1
+    before = l[pos - 1]
+    after = l[pos]
+    if after - v < v - before:
+        return pos
+    else:
+        return pos - 1
 
 def generateSkylineFiles(peak_scores,peak_boundaries,samples,polarity,moleculeListName = "XCMS peaks"):
     transitionList = deepcopy(peak_scores)

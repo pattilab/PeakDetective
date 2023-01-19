@@ -3,7 +3,8 @@ import pandas as pd
 import scipy.stats as stats
 import os
 import uuid
-from . import printProgressBar, startConcurrentTask
+import bisect
+from . import printProgressBar, startConcurrentTask, getIndexOfClosestValue
 
 class PeakList():
     def __init__(self,peakList = None):
@@ -12,10 +13,11 @@ class PeakList():
         else:
             self.peakList = peakList
             
-    def from_csv(self,fn):
-        self.peakList = pd.read_csv(fn)
-        self.sampleCols = [x for x in self.peakList.columns.values if x not in ["mz","rt","rt_start","rt_end","isotope","adduct","peak group"]]
-        
+    def from_df(self,df,sampleCols=None):
+        self.peakList = df
+        if sampleCols is None: self.sampleCols = [x for x in self.peakList.columns.values if x not in ["mz","rt","rt_start","rt_end","isotope","adduct","peak group"]]
+        else: self.sampleCols = sampleCols
+
     def to_csv(self,fn):
         self.peakList.to_csv(fn)
 
@@ -61,15 +63,26 @@ class PeakList():
     #            goodRows.append(index)
     #    self.peakList = self.peakList.loc[goodRows,:]
 
-    def removeRedundancy(self,corrThresh,rtThresh,polarity,ppm,numCores):
+    def removeRedundancy(self,corrThresh,rtThresh,polarity,ppm,numCores,sampleCols=None):
+
+        if sampleCols is None:
+            sampleCols = self.sampleCols
+
         groups = []
         anchors = []
+        rts = []
+        c = 0
+
+        self.peakList = self.peakList.sort_values(by="rt",ascending=True)
         for index,row in self.peakList.iterrows():
             unique = True
-            for i,inds,[rt,vec] in zip(range(len(groups)),groups,anchors):
-                if np.abs(rt-row["rt"]) < rtThresh:
-                    if len(self.sampleCols) > 2:
-                        r,p = stats.pearsonr(vec,row[self.sampleCols].values)
+            if len(rts) > 0:
+                iC = getIndexOfClosestValue(rts,row["rt"])
+                i = int(iC)
+                while i > -1 and np.abs(rts[i]-row["rt"]) < rtThresh :
+                    rt,vec = anchors[i]
+                    if len(sampleCols) > 2:
+                        r, p = stats.pearsonr(vec, row[sampleCols].values)
                         if r > corrThresh:
                             unique = False
                             groups[i].append(index)
@@ -78,9 +91,34 @@ class PeakList():
                         unique = False
                         groups[i].append(index)
                         break
+                    i -= 1
+                i = int(iC) + 1
+                while  i < len(rts) and np.abs(rts[i]-row["rt"]) < rtThresh:
+                    rt,vec = anchors[i]
+                    if len(sampleCols) > 2:
+                        r, p = stats.pearsonr(vec, row[sampleCols].values)
+                        if r > corrThresh:
+                            unique = False
+                            groups[i].append(index)
+                            break
+                    else:
+                        unique = False
+                        groups[i].append(index)
+                        break
+                    i += 1
+            else:
+                iC = 0
+
             if unique:
-                groups.append([index])
-                anchors.append([row["rt"],row[self.sampleCols].values])
+                if len(rts) > 0 and row["rt"] > rts[iC]:
+                    i = iC + 1
+                else:
+                    i = iC
+                rts.insert(i,row["rt"])
+                groups.insert(i,[index])
+                anchors.insert(i,[row["rt"],row[sampleCols].values])
+            c += 1
+            printProgressBar(c,len(self.peakList),prefix="grouping peaks",suffix=str(len(groups)) + " peak groups found",printEnd="")
 
         args = []
         for i,g in enumerate(groups):
@@ -91,10 +129,10 @@ class PeakList():
         for res,g in zip(result,groups):
             self.peakList.loc[g,res.columns.values] = res.values
 
+        featsRemoved = len(self.peakList[self.peakList["uniqueIon"]]) - len(self.peakList)
         self.peakList = self.peakList[self.peakList["uniqueIon"]]
+        print(featsRemoved,"redundant features found")
 
-
-        
     def backgroundSubtract(self,blank_keys,sample_keys,factor=3):
         goodRows = []
         sampleCols = [x for x in self.sampleCols if any(y in x for y  in sample_keys)]
@@ -104,7 +142,7 @@ class PeakList():
             sampleInt = np.mean(row[sampleCols])
             if sampleInt >= factor * blankInt:
                 goodRows.append(index)
-                
+        print(len(self.peakList)-len(goodRows), "background features found")
         self.peakList = self.peakList.loc[goodRows,:]
         
 
@@ -158,6 +196,16 @@ def runMzUnity(df,polarity,ppm,q=None):
 
     else:
         df["uniqueIon"] = True
+
+    #check for duplicate mzs
+    mzs = df["mz"].values
+    toDrop = []
+    for x in range(len(mzs)):
+        for y in range(x):
+            if abs(mzs[x] - mzs[y])/mzs[x] < ppm:
+                toDrop.append(df.index.values[y])
+
+    df.loc[toDrop,"uniqueIon"] = False
 
     if type(q) != type(None):
         q.put(0)
