@@ -198,27 +198,27 @@ class PeakDetective():
 
 
 
-    def plot_overlayedEIC(self,rawdatas,mz,rt_start,rt_end,smoothing=0,alpha=0.3):
+    def plot_overlayedEIC(self,rawdatas,mz,rt_start,rt_end,alpha=0.3):
         ts = np.linspace(rt_start,rt_end,self.resolution)
         for data in rawdatas:
-            s = data.interpolate_data(mz,rt_start,rt_end,smoothing)
+            s = data.interpolate_data(mz,rt_start,rt_end)
             ints  = [np.max([x,0]) for x in s(ts)]
             plt.plot(ts,ints,alpha=alpha)
 
 
     @staticmethod
-    def getNormalizedIntensityVector(data,mzs,rtstarts,rtends,smoothing,resolution,q=None):
+    def getNormalizedIntensityVector(data,mzs,rtstarts,rtends,resolution,q=None):
         out = np.zeros((len(mzs),resolution))
         i=0
         for mz,rt_start,rt_end in zip(mzs,rtstarts,rtends):
-            s = data.interpolate_data(mz,rt_start,rt_end,smoothing)
+            s = data.interpolate_data(mz,rt_start,rt_end)
             out[i,:] = s(np.linspace(rt_start,rt_end,resolution))
             i += 1
         if type(q) != type(None):
             q.put(0)
         return out
 
-    def makeDataMatrix(self,rawdatas,mzs,rts,smoothing=0,align=False):
+    def makeDataMatrix(self,rawdatas,mzs,rts,align=False):
         rtstarts = [rt - self.windowSize/2 for rt in rts]
         rtends = [rt + self.windowSize/2 for rt in rts]
         args = []
@@ -234,12 +234,12 @@ class PeakDetective():
                 tmpRTends.append(rtend)
                 featInds.append(i)
                 if len(tmpMzs) == numToGetPerProcess:
-                    args.append([rawdata,tmpMzs,tmpRtStarts,tmpRTends,smoothing,self.resolution])
+                    args.append([rawdata,tmpMzs,tmpRtStarts,tmpRTends,self.resolution])
                     tmpMzs = []
                     tmpRtStarts = []
                     tmpRTends = []
 
-            if len(tmpMzs) > 0: args.append([rawdata, tmpMzs, tmpRtStarts, tmpRTends, smoothing,self.resolution])
+            if len(tmpMzs) > 0: args.append([rawdata, tmpMzs, tmpRtStarts, tmpRTends,self.resolution])
 
         result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, self.numCores, "forming matrix", len(args))
 
@@ -473,13 +473,12 @@ class PeakDetective():
         y = self.classifier.predict([X_latent, peak_areas])
         return y
 
-    def curatePeaks(self,raw_datas,peaks,threshold=0.5):
+    def curatePeaks(self,raw_datas,peaks,threshold=0.5,align=False):
         print("generating EICs...")
         mzs = peaks["mz"].values
         rts =  peaks["rt"].values
 
-        X = self.makeDataMatrix(raw_datas,mzs,rts)
-        peak_areas = [integratePeak(x) for x in X]
+        X = self.makeDataMatrix(raw_datas,mzs,rts,align=align)
 
         y = self.classifyMatrix(X)
 
@@ -494,16 +493,14 @@ class PeakDetective():
             for index in peaks.index.values:
                 keys.append([raw.filename, index])
 
-        transitionLists = self.getPeakBoundaries(X, [raw.filename for raw in raw_datas], peak_scores, threshold)
-        for raw in raw_datas:
-            peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
-
         for [file, index], score in zip(keys, y[:, 1]):
             peak_scores.at[index, file] = score
             val = 0
             if score > threshold:
                 val = 1
             peak_curated.at[index, file] = val
+
+        peak_intensities,transitionLists = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, threshold)
 
         return peak_curated,peak_scores,peak_intensities
 
@@ -518,7 +515,7 @@ class PeakDetective():
         self.resolution = tmpRes
         self.windowSize = rawDatas[0].rts[-1] + self.windowSize/2 - rawDatas[0].rts[0] + self.windowSize/2
         rts = [(rawDatas[0].rts[-1] + rawDatas[0].rts[0])/2 for _ in rois]
-        X_tot = self.makeDataMatrix(rawDatas, rois, rts, 0,align)
+        X_tot = self.makeDataMatrix(rawDatas, rois, rts,align)
         self.resolution = oldRes
         self.windowSize = oldwindow
 
@@ -539,6 +536,7 @@ class PeakDetective():
 
 
         counter = 0
+        rowCounter = 0
         trueDt = tmpRes / (rawDatas[0].rts[-1] + self.windowSize/2 - rawDatas[0].rts[0] + self.windowSize/2)
         stride = int(np.floor(window * trueDt))
 
@@ -552,9 +550,9 @@ class PeakDetective():
                     if end >= X_tot.shape[1]:
                         n = X_tot.shape[1] - start
                         print(start,end,n,X.shape,X_tot.shape,numPoints)
-                        X[counter,:n]  = X_tot[row,start:]
+                        X[counter,:n]  = X_tot[rowCounter,start:]
                     else:
-                        X[counter, :] = X_tot[row, start:end]
+                        X[counter, :] = X_tot[rowCounter, start:end]
                     counter += 1
                     start += stride
                     end += stride
@@ -564,17 +562,22 @@ class PeakDetective():
                     files.append(rawData.filename)
                     featInds.append(i)
                     i += 1
+                rowCounter += 1
 
         X = X[:counter]
 
         print(len(X),"EICs constructed for evaluation")
 
+        peak_areas = [integratePeak(x) for x in X]
+        toClassify = [x for x in range(len(peak_areas)) if peak_areas[x] > intensityCutoff]
+
         peak_scores = pd.DataFrame(index=range(len(set(featInds))))
+
         orderedMzs = []
         orderedRts = []
 
-        rt = float(rawDatas[0].rts[0])
         for row in range(len(rois)):
+            rt = float(rawDatas[0].rts[0])
             for _ in range(numPoints):
                 orderedMzs.append(rois[row])
                 orderedRts.append(rt)
@@ -584,9 +587,10 @@ class PeakDetective():
         peak_scores["rt"] = orderedRts
 
         for rawData in rawDatas:
-            peak_scores[rawData.filename] = 0
+            peak_scores[rawData.filename] = 0.0
 
-        y = self.classifyMatrix(X)[:, 1]
+        y = np.zeros(len(X))
+        y[toClassify] = self.classifyMatrix(X[toClassify])[:, 1]
         print("done")
 
         goodInds = []
@@ -594,21 +598,29 @@ class PeakDetective():
             if score > cutoff:
                 goodInds.append(id)
             peak_scores.at[id,filename] = score
+
         goodInds = list(set(goodInds))
         goodInds.sort()
 
-        peak_scores = peak_scores.loc[goodInds,:]
-        peak_scores = peak_scores.reset_index()
 
-        peak_intensities = deepcopy(peak_scores)
+        toKeep = []
+        for x in range(len(rawDatas)):
+            for g in goodInds:
+                toKeep.append(x*len(peak_scores) + g)
+
+        X = X[toKeep]
+
+        peak_scores = peak_scores.loc[goodInds,:]
+
+        peak_scores = peak_scores.reset_index()
 
         print(len(peak_scores), " peaks found")
 
-        transitionLists = self.getPeakBoundaries(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
-        for raw in rawDatas:
-            peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
+        peak_intensities,transitionLists = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
+        #for raw in rawDatas:
+        #    peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
 
-        return peak_scores, peak_intensities
+        return peak_scores, peak_intensities, transitionLists,X
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
@@ -689,26 +701,29 @@ class PeakDetective():
         goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
         return peakScores.loc[goodInds,:]
 
-    def getPeakBoundaries(self,X,samples,peakScores,cutoff,defaultWidth=0.5):
+    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5):
         i = 0
         toFill = []
         transitionLists = {}
         for samp in samples:
             peakBoundaries = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt_start","rt_end"])
             bounds = []
+            indices = []
             for index,row in peakScores.iterrows():
                 if row[samp] > cutoff:
                     lb,rb = findPeakBoundaries(X[i])
                     #lb = adjustedRt
                     #rb = adjustedRt
-                    actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
-                    bounds.append([actualRts[lb],actualRts[rb]])
+                    #actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
+                    bounds.append([lb,rb])
                 else:
                     bounds.append([-1,-1])
                     toFill.append((index,samp))
+                indices.append(i)
                 i += 1
             peakBoundaries["mz"] = peakScores["mz"].values
             peakBoundaries["rt"] = peakScores["rt"].values
+            peakBoundaries["mat_ind"] = indices
             peakBoundaries[["rt_start","rt_end"]] = deepcopy(np.array(bounds))
             transitionLists[samp] = peakBoundaries
 
@@ -716,12 +731,20 @@ class PeakDetective():
             widths = [transitionLists[x].at[index,"rt_end"] - transitionLists[x].at[index,"rt_start"] for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
             centers = [np.mean([transitionLists[x].at[index,"rt_end"],transitionLists[x].at[index,"rt_start"]]) for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
             if len(widths) > 0:
-                transitionLists[samp].at[index,"rt_start"] = np.mean(centers) - np.mean(widths)/2
-                transitionLists[samp].at[index,"rt_end"] = np.mean(centers) + np.mean(widths)/2
+                transitionLists[samp].at[index,"rt_start"] = int(np.round(np.mean(centers) - np.mean(widths)/2))
+                transitionLists[samp].at[index,"rt_end"] = int(np.round(np.mean(centers) + np.mean(widths)/2))
             else:
-                transitionLists[samp].at[index,"rt_start"] = transitionLists[samp].at[index,"rt"] - defaultWidth/2
-                transitionLists[samp].at[index,"rt_end"] = transitionLists[samp].at[index,"rt"] + defaultWidth/2
-        return transitionLists
+                transitionLists[samp].at[index,"rt_start"] = int(np.round(self.resolution/2 - defaultWidth * self.resolution/2))
+                transitionLists[samp].at[index,"rt_end"] = int(np.round(self.resolution/2 + defaultWidth * self.resolution/2))
+
+        peak_areas = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt"])
+        peak_areas["mz"] = peakScores["mz"].values
+        peak_areas["rt"] = peakScores["rt"].values
+
+        for x in transitionLists:
+            peak_areas[x] = [integratePeak(X[int(row["mat_ind"])],[int(row["rt_start"]),int(row["rt_end"])]) for _,row in transitionLists[x].iterrows()]
+
+        return peak_areas,transitionLists
 
 
 def validateInput(input):
@@ -804,7 +827,7 @@ class rawData():
         mz_start = mz - width
         mz_end = mz + width
         rts = [x for x in self.rts if x > rt_start and x < rt_end]
-        intensity = [np.sum([i for mz,i in self.data[rt].items() if mz > mz_start and mz < mz_end]) for rt in rts]
+        intensity = [np.max([0,np.sum([i for mz,i in self.data[rt].items() if mz > mz_start and mz < mz_end])]) for rt in rts]
         return rts,intensity
 
     # def integrateTargets(self,transitionList):
@@ -816,14 +839,30 @@ class rawData():
     #     transitionList[self.filename] = areas
     #     return transitionList
 
-    def interpolate_data(self,mz,rt_start,rt_end,smoothing=0):
+    def interpolate_data(self,mz,rt_start,rt_end):
         rts,intensity = self.extractEIC(mz,rt_start,rt_end)
         if len(rts) > 3:
-            smoothing = smoothing * len(rts) * np.max(intensity)
-            s = UnivariateSpline(rts,intensity,ext=1,s=smoothing)
+            #smoothing = smoothing * len(rts) * np.max(intensity)
+            #s = UnivariateSpline(rts,intensity,ext=1,s=smoothing)
+            s = interp1d(rts,intensity,kind="linear",fill_value=0,bounds_error=False)
         else:
-            s = UnivariateSpline([0,5,10,15],[0,0,0,0],ext=1,s=smoothing)
+            #s = UnivariateSpline([0,5,10,15],[0,0,0,0],ext=1,s=smoothing)
+            s = interp1d([0,5,10,15],[0,0,0,0],kind="linear",fill_value=0,bounds_error=False)
+
         return s
+
+    def getMergedSpectrum(self,rtRange=None,intensityThresh=0,ppm=1):
+        if rtRange is None:
+            rtRange = [self.rts[0],self.rts[-1]]
+        spectra = [{mz:i for mz,i in self.data[rt].items() if i > intensityThresh} for rt in self.rts if rt > rtRange[0] and rt < rtRange[1]]
+        return mergeSpectra(spectra,ppm)
+
+    def correctMassShift(self,shift):
+        convertToDa = lambda x: (shift * x / 1e6)
+        self.data = {rt:{mz-convertToDa(mz):i for mz,i in spec.items()} for rt,spec in self.data.items()}
+
+
+
 
 def Smoother(resolution):
     # build autoencoder
@@ -1004,10 +1043,18 @@ def findPeakBoundaries(peak):
 
     return lb,rb
 
-def integratePeak(peak):
-    lb,rb = findPeakBoundaries(peak)
+def integratePeak(peak,bounds=None):
+    if bounds is None:
+        lb,rb = findPeakBoundaries(peak)
+    else:
+        lb = bounds[0]
+        rb = bounds[1]
     if lb != rb:
-        area = np.trapz(peak[lb:rb],np.linspace(lb,rb,rb-lb))
+        try:
+            area = np.trapz(peak[lb:rb],np.linspace(lb,rb,rb-lb))
+        except:
+            print(lb,rb)
+            area = 0
     else:
         area = 0
     return area
@@ -1064,9 +1111,78 @@ def alignDataMatrix(matrix,peakInds,normalize=True,numCores=1):
     return matrix
 
 
+def isoLock(refMasses,queryMasses,driftRange=0.005,toTest=50,targetDiff=0.0001):
+    bestDrift = 0
+    bestIsoPairs = 0
+    refMasses = list(refMasses)
+    refMasses.sort()
+
+    for drift in np.linspace(-1*driftRange,driftRange,toTest):
+        sep = 1.00336 + drift
+        massesToFind = refMasses + sep
+        numPairs = 0
+        for m in massesToFind:
+            best = take_closest(queryMasses,m)
+            if np.abs(best-m) < targetDiff:
+                numPairs += 1
+        if (numPairs == bestIsoPairs and drift < bestDrift) or numPairs > bestIsoPairs:
+            bestDrift = drift
+            bestIsoPairs = numPairs
+    print(bestIsoPairs,"isopairs found with drift",bestDrift)
+    return bestDrift
+
+def takeClosestInd(myList, myNumber):
+    """
+    Assumes myList is sorted. Returns closest value to myNumber.
+
+    If two numbers are equally close, return the smallest number.
+    """
+
+    pos = bisect_left(myList, myNumber)
+    if pos == 0:
+        return pos
+    if pos == len(myList):
+        return len(myList) - 1
+    before = myList[pos - 1]
+    after = myList[pos]
+    if after - myNumber < myNumber - before:
+        return pos
+    else:
+        return pos-1
+
+def mergeSpectra(spectra,ppm):
+    if len(spectra) > 0:
+        mergedSpectrumMzs = [x for x in spectra[0]]
+        mergedSpectrumMzs.sort()
+        mergedSpectrumInts = [spectra[0][x] for x in mergedSpectrumMzs]
+
+        if len(spectra) > 1:
+            fact = ppm / 1e6
+            for spectrum in spectra[1:]:
+                for mz,i in spectrum.items():
+
+                    if len(mergedSpectrumMzs) > 0:
+
+                        x = takeClosestInd(mergedSpectrumMzs,mz)
+                        delta = mz * fact
+
+                        if mergedSpectrumMzs[x] > mz - delta and mergedSpectrumMzs[x] < mz + delta:
+                            mergedSpectrumInts[x] += i
+                        else:
+                            if mz < mergedSpectrumMzs[x]:
+                                mergedSpectrumMzs.insert(x,mz)
+                                mergedSpectrumInts.insert(x,i)
+                            else:
+                                mergedSpectrumMzs.insert(x+1,mz)
+                                mergedSpectrumInts.insert(x+1,i)
+
+                    else:
+                        mergedSpectrumMzs.append(mz)
+                        mergedSpectrumInts.append(i)
+    else:
+        mergedSpectrumMzs = []
+        mergedSpectrumInts = []
 
 
-
-
-
+    return {mz:i for mz,i in zip(mergedSpectrumMzs,mergedSpectrumInts)}
 

@@ -14,7 +14,7 @@ class PeakList():
             
     def from_csv(self,fn):
         self.peakList = pd.read_csv(fn)
-        self.sampleCols = [x for x in self.peakList.columns.values if x not in ["mz","rt_start","rt_end","isotope","adduct","peak group"]] 
+        self.sampleCols = [x for x in self.peakList.columns.values if x not in ["mz","rt","rt_start","rt_end","isotope","adduct","peak group"]]
         
     def to_csv(self,fn):
         self.peakList.to_csv(fn)
