@@ -37,45 +37,42 @@ doubleCharged = unique(c(doubleCharged$A,doubleCharged$B.1))
 #filter out single charged
 singleCharged = mz[which(!mz$row %in% doubleCharged),]
 
+if (nrow(singleCharged) > 1){
+  #find M+1 ions
+  m1Ions = mz.unity.search(A = singleCharged,
+                         B = singleCharged,
+                         M = M.iso, ppm = ppm,
+                         BM.limits = cbind(M.min = c(1), M.max = c(1), B.n = c(1)))
 
-#find M+1 ions
-m1Ions = mz.unity.search(A = singleCharged, 
-                       B = singleCharged, 
-                       M = M.iso, ppm = ppm, 
-                       BM.limits = cbind(M.min = c(1), M.max = c(1), B.n = c(1)))
+  m1Ions = reindex(m1Ions,'^A$|^A.|^B$|^B.', singleCharged$row)
 
-m1Ions = reindex(m1Ions,'^A$|^A.|^B$|^B.', singleCharged$row)
+  m1Ions = unique(m1Ions$B.1)
 
-m1Ions = unique(m1Ions$B.1)
+  #filterOutM1Ions
+  mIons = singleCharged[which(singleCharged$row %in% m1Ions),]
 
-#filterOutM1Ions 
-monoIso = singleCharged[which(singleCharged$row %in% m1Ions),]
+  if (nrow(mIons) > 1){
+     #find neutral loses
+    nls = mz.unity.search(A = mIons,
+                          B = mIons,
+                          M = M.n, ppm = ppm,
+                          BM.limits = cbind(M.min = c(1), M.max = c(1), B.n = c(1))
+    )
+    nls = reindex(nls,'^A$|^A.|^B$|^B.', mIons$row)
+    nls = unique(nls$A)
 
-
-#find adducts
-#adduct = mz.unity.search(A = monoIso,
-#                       B = monoIso,
-#                       M = M.z, ppm = ppm,
-#                       BM.limits = cbind(M.min = c(2), M.max = c(2), B.n = c(1)))
-#adduct = reindex(adduct,'^A$|^A.|^B$|^B.', monoIso$row)
-
-#adduct = unique(adduct$A)
-
-#filter out adducts
-mIons = monoIso#[which(!monoIso$row %in% adduct),]
+    #filter nuetral lose
+    uniqueIons = mIons[which(!mIons$row %in% nls),]
+  }else{
+    uniqueIons = mIons
+  }
 
 
-#find neutral loses
-nls = mz.unity.search(A = mIons, 
-                      B = mIons, 
-                      M = M.n, ppm = ppm, 
-                      BM.limits = cbind(M.min = c(1), M.max = c(1), B.n = c(1))
-)
-nls = reindex(nls,'^A$|^A.|^B$|^B.', mIons$row)
-nls = unique(nls$A)
+}else{
+  uniqueIons = singleCharged
+}
 
-#filter nuetral lose
-uniqueIons = mIons[which(!mIons$row %in% nls),]
+
 
 mz$uniqueIon = mz$row %in% uniqueIons$row
 

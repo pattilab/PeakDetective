@@ -77,49 +77,27 @@ class PeakList():
         for index,row in self.peakList.iterrows():
             unique = True
             if len(rts) > 0:
-                iC = getIndexOfClosestValue(rts,row["rt"])
-                i = int(iC)
-                while i > -1 and np.abs(rts[i]-row["rt"]) < rtThresh :
-                    rt,vec = anchors[i]
+                iC = len(rts) - 1
+                rt, vec = anchors[iC]
+
+                if np.abs(rts[iC]-row["rt"]) < rtThresh:
                     if len(sampleCols) > 2:
                         r, p = stats.pearsonr(vec, row[sampleCols].values)
                         if r > corrThresh:
                             unique = False
-                            groups[i].append(index)
-                            break
+                            groups[iC].append(index)
                     else:
                         unique = False
-                        groups[i].append(index)
-                        break
-                    i -= 1
-                i = int(iC) + 1
-                while  i < len(rts) and np.abs(rts[i]-row["rt"]) < rtThresh:
-                    rt,vec = anchors[i]
-                    if len(sampleCols) > 2:
-                        r, p = stats.pearsonr(vec, row[sampleCols].values)
-                        if r > corrThresh:
-                            unique = False
-                            groups[i].append(index)
-                            break
-                    else:
-                        unique = False
-                        groups[i].append(index)
-                        break
-                    i += 1
-            else:
-                iC = 0
+                        groups[iC].append(index)
 
             if unique:
-                if len(rts) > 0 and row["rt"] > rts[iC]:
-                    i = iC + 1
-                else:
-                    i = iC
-                rts.insert(i,row["rt"])
-                groups.insert(i,[index])
-                anchors.insert(i,[row["rt"],row[sampleCols].values])
+                rts.append(row["rt"])
+                groups.append([index])
+                anchors.append([row["rt"],row[sampleCols].values])
             c += 1
             printProgressBar(c,len(self.peakList),prefix="grouping peaks",suffix=str(len(groups)) + " peak groups found",printEnd="")
 
+        self.peakList = self.peakList.sort_index()
         args = []
         for i,g in enumerate(groups):
             filt = self.peakList.loc[g,:]
@@ -129,7 +107,7 @@ class PeakList():
         for res,g in zip(result,groups):
             self.peakList.loc[g,res.columns.values] = res.values
 
-        featsRemoved = len(self.peakList[self.peakList["uniqueIon"]]) - len(self.peakList)
+        featsRemoved =  len(self.peakList) - len(self.peakList[self.peakList["uniqueIon"]])
         self.peakList = self.peakList[self.peakList["uniqueIon"]]
         print(featsRemoved,"redundant features found")
 
@@ -144,12 +122,44 @@ class PeakList():
                 goodRows.append(index)
         print(len(self.peakList)-len(goodRows), "background features found")
         self.peakList = self.peakList.loc[goodRows,:]
+
+    def imputeRowMin(self,sample_keys,minimum=1):
+
+        arr = self.peakList[sample_keys].values.transpose()
+
+        # find the minimum non-zero value of each compound
+        max_vals = [np.min([x for x in c if x > minimum]) for c in arr.transpose()]
+
+        # impute values
+        data_imp = np.zeros(arr.shape)
+        numImputted = 0
+        numNon = 0
+
+        for c in range(arr.shape[1]):
+            for r in range(arr.shape[0]):
+                # if not a missing value
+                if arr[r, c] > 1e-3:
+                    data_imp[r, c] = arr[r, c]
+                    numNon += 1
+                # if it is a missing value
+                else:
+                    data_imp[r, c] = max_vals[c] / 2
+                    numImputted += 1
+        print(numImputted / (numImputted + numNon), "of values imputted")
+
+
+        self.peakList[sample_keys] = data_imp.transpose()
+
+    def logTransform(self,sampleCols):
+        self.peakList[sampleCols] = np.log2(self.peakList[sampleCols].values)
+
+
         
 
 def compareRT(feat1,feat2,rtTol):
 
-    rt1 = np.mean([feat1["rt_start"],feat1["rt_end"]])
-    rt2 = np.mean([feat2["rt_start"],feat2["rt_end"]])
+    rt1 = feat1["rt"]
+    rt2 = feat2["rt"]
     
     if np.abs(rt1-rt2) < rtTol:
         return True
@@ -157,11 +167,16 @@ def compareRT(feat1,feat2,rtTol):
     return False
 
 def mergePeakLists(peakLists,names,ppm=20,rtTol=.5):
-    peakLists = [x[["mz","rt_start","rt_end"]].reset_index() for x in peakLists]
-    mergedList = pd.DataFrame()
+    peakLists = [x[["mz","rt"]].reset_index() for x in peakLists]
+    mergedList = peakLists[0]
     peakFounders = {n:{} for n in names}
 
-    for x,n in zip(peakLists,names):
+    for index,row in mergedList.iterrows():
+        peakFounders[names[0]][index] = 1
+        for n in names[1:]:
+            peakFounders[n][index] = 0
+
+    for x,n in zip(peakLists[1:],names[1:]):
         for index,row in x.iterrows():
             new = True
             mz_bounds = [row["mz"] - ppm*row["mz"]/1e6,row["mz"] + ppm*row["mz"]/1e6]
@@ -188,24 +203,28 @@ def mergePeakLists(peakLists,names,ppm=20,rtTol=.5):
 def runMzUnity(df,polarity,ppm,q=None):
     dir = os.path.dirname(__file__)
     path = str(uuid.uuid4()) + ".csv"
-    if len(df) > 0:
+    if len(df) > 1:
         df.to_csv(path)
         os.system("Rscript " + os.path.join(dir, "mz_unity.R") + " " + path + " " + str(polarity) + " " + str(ppm) + " " + path)
         df = pd.read_csv(path,index_col=0)
-        os.remove(path)
+        if "uniqueIon" not in df.columns.values:
+            print("bad",len(df))
+            df["uniqueIon"] = True
+        else:
+            os.remove(path)
 
     else:
         df["uniqueIon"] = True
 
     #check for duplicate mzs
     mzs = df["mz"].values
-    toDrop = []
     for x in range(len(mzs)):
         for y in range(x):
             if abs(mzs[x] - mzs[y])/mzs[x] < ppm:
-                toDrop.append(df.index.values[y])
+                df.at[df.index.values[y],"uniqueIon"] = False
 
-    df.loc[toDrop,"uniqueIon"] = False
+
+
 
     if type(q) != type(None):
         q.put(0)

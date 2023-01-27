@@ -1,7 +1,6 @@
 from pyteomics import mzml
 import sys
 import numpy as np
-from scipy.interpolate import UnivariateSpline
 import matplotlib.pyplot as plt
 from multiprocessing import Manager,Pool
 from threading import Thread
@@ -14,13 +13,13 @@ import math
 import random as rd
 import IPython.display
 from copy import deepcopy
-import sklearn.metrics as met
 import pandas as pd
 from scipy.spatial.distance import euclidean
 from fastdtw import fastdtw
 from scipy.interpolate import interp1d
 import pickle as pkl
 import os
+import sklearn.metrics as met
 
 
 #Utility functions:
@@ -141,50 +140,17 @@ def getIndexOfClosestValue(l,v):
     else:
         return pos - 1
 
-def generateSkylineFiles(peak_scores,peak_boundaries,samples,polarity,moleculeListName = "XCMS peaks"):
-    transitionList = deepcopy(peak_scores)
-
-    transitionList["Precursor Name"] = ["unknown " + str(index) for index, row in transitionList.iterrows()]
-    transitionList["Explicit Retention Time"] = [row["rt"] for index, row in
-                                                 transitionList.iterrows()]
-    polMapper = {"Positive": 1, "Negative": -1}
-    transitionList["Precursor Charge"] = [polMapper[polarity] for index, row in transitionList.iterrows()]
-    transitionList["Precursor m/z"] = [row["mz"] for index,row in transitionList.iterrows()]
-    transitionList["Molecule List Name"] = [moleculeListName for _ in range(len(transitionList))]
-    transitionList = transitionList[
-        ["Molecule List Name", "Precursor Name", "Precursor m/z", "Precursor Charge",
-         "Explicit Retention Time"]]
-
-    peakBoundariesSkyline = {}
-
-    # iterate through filenames and cpds
-    for fn in samples:
-        for index, row in transitionList.iterrows():
-            peakBoundariesSkyline[len(peakBoundariesSkyline)] = {"Min Start Time": peak_boundaries.at[index,fn][0],
-                                                   "Max End Time": peak_boundaries.at[index,fn][1],
-                                                   "Peptide Modified Sequence": row["Precursor Name"],
-                                                   "File Name": fn}
-
-    # format as df
-    peakBoundariesSkyline = pd.DataFrame.from_dict(peakBoundariesSkyline, orient="index")
-    peakBoundariesSkyline = peakBoundariesSkyline[["File Name", "Peptide Modified Sequence", "Min Start Time", "Max End Time"]]
-
-    return transitionList,peakBoundariesSkyline
-
-
-
-
 
 class PeakDetective():
     """
-    Class for curation/detection of LC/MS peaks in untargerted metabolomics data
+    Class for curation/detection of LC/MS peaks in untargeted metabolomics data
     """
     def __init__(self,resolution=100,numCores=1,windowSize = 1.0):
         self.resolution = resolution
         self.numCores = numCores
         self.windowSize = windowSize
         self.smoother = Smoother(resolution)
-        self.classifier = Classifier(resolution)
+        self.classifier = ClassifierLatent(5)
         self.encoder = keras.Model(self.smoother.input, self.smoother.layers[7].output)
 
     def save(self,path):
@@ -278,7 +244,7 @@ class PeakDetective():
 
         return X_signal
 
-    def generateFalsePeaks(self,peaks,raw_datas, n=None):
+    def generateFalsePeaks(self,peaks,raw_datas, n=None,align=False):
         if type(n) == type(None):
             n = len(peaks)
 
@@ -286,20 +252,20 @@ class PeakDetective():
         peaks_rand["rt"] = rd.choices(list(peaks["rt"].values),k=n)
         peaks_rand["mz"] = rd.choices(list(peaks["mz"].values),k=n)
 
-        X_noise = self.makeDataMatrix(raw_datas,peaks_rand["mz"].values,peaks_rand["rt"].values)
+        X_noise = self.makeDataMatrix(raw_datas,peaks_rand["mz"].values,peaks_rand["rt"].values,align)
 
         return X_noise
 
-    def generateSignalPeaks(self,peaks,raw_datas,widthFactor = 0.1,heightFactor = 1,n=None):
+    def generateSignalPeaks(self,peaks,raw_datas,widthFactor = 0.1,heightFactor = 1,n=None,align=False):
         if type(n) == type(None):
             n = len(peaks)
-        X_noise = self.generateFalsePeaks(peaks,raw_datas,n=n)
+        X_noise = self.generateFalsePeaks(peaks,raw_datas,n=n,align=align)
         X_signal = self.generateGaussianPeaks(int(n*len(raw_datas)),[[0.45,0.5],[0.5,0.55]],(1,1),widthFactor,heightFactor)
 
         samp = peaks.loc[rd.choices(list(peaks.index.values),k=int(np.ceil(n))),:]
         mzs = list(samp["mz"].values)
 
-        tmp = self.makeDataMatrix(raw_datas,mzs,samp["rt"].values)
+        tmp = self.makeDataMatrix(raw_datas,mzs,samp["rt"].values,align=align)
         tmp = tmp[:n*len(raw_datas),:]
 
         signal_areas = np.array([integratePeak(x) for x in tmp])
@@ -458,6 +424,8 @@ class PeakDetective():
                 plt.figure()
                 plt.hist(y[:, 1], bins=20)
                 plt.title("round" + str(i + 1))
+                plt.xlabel("PeakDetective Score")
+                plt.ylabel("Number of features")
                 plt.show()
 
                 print(str(len(updatingInds)) + " unclassified features remaining")
@@ -471,6 +439,8 @@ class PeakDetective():
             else:
                 doMore = False
             i += 1
+
+        plotScoringStatistics(self.classifyMatrix(X_val)[:,1],y_val[:,1])
 
 
     def classifyMatrix(self,X):
@@ -513,7 +483,7 @@ class PeakDetective():
 
         return peak_curated,peak_scores,peak_intensities
 
-    def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=0.05,align=True):
+    def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=0.05,align=True,detectFrac=0.0):
         rois = self.roiDetection(rawDatas, intensityCutoff=intensityCutoff, numDataPoints=numDataPoints)
 
         print("generating all EICs from ROIs...")
@@ -608,7 +578,11 @@ class PeakDetective():
                 goodInds.append(id)
             peak_scores.at[id,filename] = score
 
-        goodInds = list(set(goodInds))
+        detectNum = int(np.ceil(len(rawDatas) * detectFrac))
+        counts = {x:0 for x in list(set(goodInds))}
+        for x in goodInds:
+            counts[x] += 1
+        goodInds = [x for x in counts if counts[x] >= detectNum]
         goodInds.sort()
 
 
@@ -629,7 +603,7 @@ class PeakDetective():
         #for raw in rawDatas:
         #    peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
 
-        return peak_scores, peak_intensities, transitionLists,X
+        return peak_scores, peak_intensities, rois
 
     def label_peaks(self,raw_data,peaks,inJupyter = True):
         rt_starts = [row["rt"] - self.windowSize/2 for _,row in peaks.iterrows()]
@@ -645,12 +619,14 @@ class PeakDetective():
 
     def labelPeak(self,vecs,rt_start,rt_end,inJupyter,title=""):
         plt.figure()
+        plt.ion()
         xs = np.linspace(rt_start, rt_end, len(vecs[0]))
         [plt.plot(xs, vec) for vec in vecs]
         plt.xlabel("time (arbitrary)")
         plt.ylabel("intensity")
         plt.title(title)
-        plt.show()
+        plt.show(block=False)
+        plt.pause(0.001)
         print("Enter classification (1=True Peak, 0=Artifact): ")
         val = input()
 
@@ -714,6 +690,7 @@ class PeakDetective():
         i = 0
         toFill = []
         transitionLists = {}
+        print("integrating peaks...")
         for samp in samples:
             peakBoundaries = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt_start","rt_end"])
             bounds = []
@@ -730,12 +707,13 @@ class PeakDetective():
                     toFill.append((index,samp))
                 indices.append(i)
                 i += 1
+                printProgressBar(i,len(X),"getting peak boundaries",printEnd="")
             peakBoundaries["mz"] = peakScores["mz"].values
             peakBoundaries["rt"] = peakScores["rt"].values
             peakBoundaries["mat_ind"] = indices
             peakBoundaries[["rt_start","rt_end"]] = deepcopy(np.array(bounds))
             transitionLists[samp] = peakBoundaries
-
+        print()
         for index,samp in toFill:
             widths = [transitionLists[x].at[index,"rt_end"] - transitionLists[x].at[index,"rt_start"] for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
             centers = [np.mean([transitionLists[x].at[index,"rt_end"],transitionLists[x].at[index,"rt_start"]]) for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
@@ -750,10 +728,31 @@ class PeakDetective():
         peak_areas["mz"] = peakScores["mz"].values
         peak_areas["rt"] = peakScores["rt"].values
 
+        i = 0
         for x in transitionLists:
+            printProgressBar(i, len(transitionLists), "calculating areas", printEnd="")
             peak_areas[x] = [integratePeak(X[int(row["mat_ind"])],[int(row["rt_start"]),int(row["rt_end"])]) for _,row in transitionLists[x].iterrows()]
+            i += 1
 
+        print()
+        print("done")
         return peak_areas,transitionLists
+
+def plotScoringStatistics(scores,labels):
+    tpr = []
+    fdr = []
+    cutoffs = np.linspace(0,1.0,100)
+    for cutoff in cutoffs:
+        fdr.append(1-met.precision_score(labels,scores > cutoff,zero_division=0))
+        tpr.append(met.recall_score(labels,scores>cutoff,zero_division=0))
+    plt.scatter(cutoffs,tpr,c="black",label="TPR")
+    plt.plot(cutoffs,tpr,c="black")
+
+    plt.scatter(cutoffs,fdr,c="red",label="FDR")
+    plt.plot(cutoffs,fdr,c="red")
+    plt.legend()
+    plt.xlabel("cutoff")
+    plt.ylabel("performance")
 
 
 def validateInput(input):
@@ -937,40 +936,6 @@ def Smoother(resolution):
 
 
     return autoencoder
-
-def Classifier(resolution):
-    descriminatorInput = keras.Input(shape=(resolution,))
-    ticInput = keras.Input(shape=(1,))
-
-    kernelsize = 3
-    stride = 2
-    max_norm_value = 2.0
-
-    x = layers.Reshape((resolution, 1))(descriminatorInput)
-    x = layers.Conv1D(2, kernelsize, strides=stride, activation='relu', kernel_constraint=max_norm(max_norm_value),
-                      kernel_initializer='he_uniform')(x)
-
-    x = layers.Conv1D(4, kernelsize, strides=stride, activation='relu', kernel_constraint=max_norm(max_norm_value),
-                      kernel_initializer='he_uniform')(x)
-
-    x = layers.Flatten()(x)
-
-    x = layers.Dense(20, activation="relu")(x)
-
-    x = keras.Model(descriminatorInput, x)
-
-    tic = keras.Model(ticInput, layers.Dense(1, activation="linear")(ticInput))
-
-    x = layers.concatenate([x.output, tic.output], axis=1)
-    x = layers.Dense(10, activation="relu")(x)
-    output = layers.Dense(2, activation="softmax")(x)
-
-    classifier = keras.Model([descriminatorInput, ticInput], output, name="discriminator")
-
-    classifier.compile(loss='binary_crossentropy', optimizer=keras.optimizers.Adam(1e-4),
-                          metrics=['mean_absolute_error'])
-
-    return classifier
 
 def ClassifierLatent(resolution):
     descriminatorInput = keras.Input(shape=(resolution,))
