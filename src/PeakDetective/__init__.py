@@ -479,7 +479,7 @@ class PeakDetective():
                 val = 1
             peak_curated.at[index, file] = val
 
-        peak_intensities,transitionLists = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, threshold)
+        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, threshold)
 
         return peak_curated,peak_scores,peak_intensities
 
@@ -599,7 +599,7 @@ class PeakDetective():
 
         print(len(peak_scores), " peaks found")
 
-        peak_intensities,transitionLists = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
+        peak_intensities = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
         #for raw in rawDatas:
         #    peak_intensities[raw.filename] = raw.integrateTargets(transitionLists[raw.filename])[raw.filename].values
 
@@ -686,57 +686,34 @@ class PeakDetective():
         goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
         return peakScores.loc[goodInds,:]
 
-    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5):
+    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5,smooth=False):
         i = 0
-        toFill = []
-        transitionLists = {}
-        print("integrating peaks...")
-        for samp in samples:
-            peakBoundaries = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt_start","rt_end"])
-            bounds = []
-            indices = []
-            for index,row in peakScores.iterrows():
-                if row[samp] > cutoff:
-                    lb,rb = findPeakBoundaries(X[i])
-                    #lb = adjustedRt
-                    #rb = adjustedRt
-                    #actualRts = np.linspace(row["rt"]-self.windowSize/2,row["rt"]+self.windowSize/2,self.resolution)
-                    bounds.append([lb,rb])
-                else:
-                    bounds.append([-1,-1])
-                    toFill.append((index,samp))
-                indices.append(i)
-                i += 1
-                printProgressBar(i,len(X),"getting peak boundaries",printEnd="")
-            peakBoundaries["mz"] = peakScores["mz"].values
-            peakBoundaries["rt"] = peakScores["rt"].values
-            peakBoundaries["mat_ind"] = indices
-            peakBoundaries[["rt_start","rt_end"]] = deepcopy(np.array(bounds))
-            transitionLists[samp] = peakBoundaries
-        print()
-        for index,samp in toFill:
-            widths = [transitionLists[x].at[index,"rt_end"] - transitionLists[x].at[index,"rt_start"] for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
-            centers = [np.mean([transitionLists[x].at[index,"rt_end"],transitionLists[x].at[index,"rt_start"]]) for x in transitionLists if transitionLists[x].at[index,"rt_start"] > 0 and transitionLists[x].at[index,"rt_end"] > 0]
-            if len(widths) > 0:
-                transitionLists[samp].at[index,"rt_start"] = int(np.round(np.mean(centers) - np.mean(widths)/2))
-                transitionLists[samp].at[index,"rt_end"] = int(np.round(np.mean(centers) + np.mean(widths)/2))
-            else:
-                transitionLists[samp].at[index,"rt_start"] = int(np.round(self.resolution/2 - defaultWidth * self.resolution/2))
-                transitionLists[samp].at[index,"rt_end"] = int(np.round(self.resolution/2 + defaultWidth * self.resolution/2))
-
         peak_areas = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt"])
         peak_areas["mz"] = peakScores["mz"].values
         peak_areas["rt"] = peakScores["rt"].values
-
-        i = 0
-        for x in transitionLists:
-            printProgressBar(i, len(transitionLists), "calculating areas", printEnd="")
-            peak_areas[x] = [integratePeak(X[int(row["mat_ind"])],[int(row["rt_start"]),int(row["rt_end"])]) for _,row in transitionLists[x].iterrows()]
+        peak_areas[samples] = np.zeros(peakScores[samples].values.shape)
+        print("integrating peaks...")
+        for index,row in peakScores.iterrows():
+            inds = []
+            allInds = []
+            for n,samp in enumerate(samples):
+                ind = i + n * len(peakScores)
+                if row[samp] > cutoff:
+                    inds.append(ind)
+                allInds.append(ind)
+            if len(inds) > 0:
+                tmp = X[inds].sum(axis=0)
+                if smooth: tmp = self.smoother.predict(normalizeMatrix(np.array([tmp])),verbose=0)[0]
+                lb,rb = findPeakBoundaries(tmp)
+            else:
+                lb = int(np.round(self.resolution / 2 - defaultWidth * self.resolution / 2))
+                rb = int(np.round(self.resolution/2 + defaultWidth * self.resolution/2))
+            for ind,sample in zip(allInds,samples):
+                peak_areas.at[index,sample] = integratePeak(X[ind],[lb,rb])
             i += 1
+            printProgressBar(i, len(peakScores), "integrating peaks", printEnd="")
 
-        print()
-        print("done")
-        return peak_areas,transitionLists
+        return peak_areas
 
 def plotScoringStatistics(scores,labels):
     tpr = []
