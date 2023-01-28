@@ -55,7 +55,11 @@ class PeakList():
         os.system("Rscript " + os.path.join(dir, "find_peaks.R") + " " + path + " " + polarity + " " + str(
             ppm) + " " + str(peakWidth[0]) + " " + str(peakWidth[1]) + " " + fn + " " + str(noise) + " " + str(s2n) + " " + str(prefilter) + " " + str(mzDiff) + " " + str(minFrac))
         self.readXCMSPeakList(path + fn)
-        
+
+    def installRPackages(self):
+        dir = os.path.dirname(__file__)
+        os.system("Rscript " + os.path.join(dir, "install_R_packages.R"))
+
     #def filterAdductsIsotopes(self,adductsToKeep = ["[M+H]","[M-H]"],isotopesToKeep = ["[M]"]):
     #    goodRows = []
     #    for index,row in self.peakList.iterrows():
