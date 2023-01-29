@@ -20,7 +20,7 @@ from scipy.interpolate import interp1d
 import pickle as pkl
 import os
 import sklearn.metrics as met
-
+import datetime
 
 #Utility functions:
 def startConcurrentTask(task,args,numCores,message,total,chunksize="none",verbose=True):
@@ -216,7 +216,7 @@ class PeakDetective():
 
             if len(tmpMzs) > 0: args.append([rawdata, tmpMzs, tmpRtStarts, tmpRTends,self.resolution])
 
-        result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, self.numCores, "forming matrix", len(args))
+        result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, 1, "forming matrix", len(args))
 
         result = np.concatenate(result,axis=0)
 
@@ -651,7 +651,7 @@ class PeakDetective():
             for rt in rts:
                 printProgressBar(counter, totalNum,prefix = "Detecting ROIs",suffix=str(len(rois)) + " ROIs found",printEnd="")
                 counter += 1
-                for mz, i in rawdata.data[rt].items():
+                for mz, i in rawdata.data[rt]:
                     if i > intensityCutoff:
                         update,pos = binarySearchROI(rois,mz,ppm)
                         if update:
@@ -704,7 +704,7 @@ class PeakDetective():
             if len(inds) > 0:
                 tmp = X[inds].sum(axis=0)
                 if smooth: tmp = self.smoother.predict(normalizeMatrix(np.array([tmp])),verbose=0)[0]
-                lb,rb = findPeakBoundaries(tmp)
+                lb,rb,apex = findPeakBoundaries(tmp)
             else:
                 lb = int(np.round(self.resolution / 2 - defaultWidth * self.resolution / 2))
                 rb = int(np.round(self.resolution/2 + defaultWidth * self.resolution/2))
@@ -774,31 +774,38 @@ def binarySearchROI(poss, query,ppm):
                 return False, pos
 
 class rawData():
-    def __init__(self):
-        self.data = {}
-        self.type = "centroid"
-        self.filename = ""
+    def __init__(self,data={},filename="",ppm=0,timestamp=None):
+        self.data = data
+        self.filename = filename
+        self.rts = list(self.data.keys())
+        self.rts.sort()
+        self.ppm = ppm
+        self.timestamp = None
 
-    def readRawDataFile(self,filename,ppm,type="centroid",samplename=None):
+    def readRawDataFile(self,filename,ppm,intensityThresh = 0):
         """
          Read MS datafile
 
         :param filename: str, path to MS datafile
         """
         try:
-
+            try:
+                with mzml.MzML(filename.replace('"', "")) as f:
+                    self.timestamp = datetime.datetime.fromisoformat(next(f.iterfind('run', recursive=False))['startTimeStamp'][:-1]).astimezone(datetime.timezone.utc)
+            except:
+                print("Warning: file timestamp could not be read")
+                self.timestamp = None
             reader = mzml.read(filename.replace('"', ""))
             ms1Scans = {}
             for temp in reader:
                 if temp['ms level'] == 1:
-                    ms1Scans[temp["scanList"]["scan"][0]["scan start time"]] = {mz: i for mz, i in
-                                                                                zip(temp["m/z array"],
-                                                                                    temp["intensity array"])}
+                    spectrum = [[mz,i] for mz, i in zip(temp["m/z array"],temp["intensity array"]) if i > intensityThresh]
+                    spectrum.sort(key=lambda x:x[0])
+                    ms1Scans[temp["scanList"]["scan"][0]["scan start time"]] = spectrum
             reader.close()
             self.rts = list(ms1Scans.keys())
             self.rts.sort()
             self.data = ms1Scans
-            self.type = type
             self.filename = filename
             self.ppm = ppm
 
@@ -812,7 +819,19 @@ class rawData():
         mz_start = mz - width
         mz_end = mz + width
         rts = [x for x in self.rts if x > rt_start and x < rt_end]
-        intensity = [np.max([0,np.sum([i for mz,i in self.data[rt].items() if mz > mz_start and mz < mz_end])]) for rt in rts]
+        intensity = []
+        for rt in rts:
+            Origind = getIndexOfClosestValue([x[0] for x in self.data[rt]],mz)
+            ind = int(Origind)
+            tmp = 0
+            while  ind < len(self.data[rt]) and self.data[rt][ind][0] > mz_start and self.data[rt][ind][0] < mz_end:
+                tmp += self.data[rt][ind][1]
+                ind += 1
+            ind = Origind - 1
+            while ind > -1 and self.data[rt][ind][0] > mz_start and self.data[rt][ind][0] < mz_end :
+                tmp += self.data[rt][ind][1]
+                ind -= 1
+            intensity.append(tmp)
         return rts,intensity
 
     # def integrateTargets(self,transitionList):
@@ -839,12 +858,9 @@ class rawData():
     def getMergedSpectrum(self,rtRange=None,intensityThresh=0,ppm=1):
         if rtRange is None:
             rtRange = [self.rts[0],self.rts[-1]]
-        spectra = [{mz:i for mz,i in self.data[rt].items() if i > intensityThresh} for rt in self.rts if rt > rtRange[0] and rt < rtRange[1]]
+        spectra = [[[mz,i] for mz,i in self.data[rt] if i > intensityThresh] for rt in self.rts if rt > rtRange[0] and rt < rtRange[1]]
         return mergeSpectra(spectra,ppm)
 
-    def correctMassShift(self,shift):
-        convertToDa = lambda x: (shift * x / 1e6)
-        self.data = {rt:{mz-convertToDa(mz):i for mz,i in spec.items()} for rt,spec in self.data.items()}
 
 
 
@@ -992,11 +1008,11 @@ def findPeakBoundaries(peak):
             x += 1
         rb = x
 
-    return lb,rb
+    return lb,rb,apex
 
 def integratePeak(peak,bounds=None):
     if bounds is None:
-        lb,rb = findPeakBoundaries(peak)
+        lb,rb,apex = findPeakBoundaries(peak)
     else:
         lb = bounds[0]
         rb = bounds[1]
@@ -1062,25 +1078,25 @@ def alignDataMatrix(matrix,peakInds,normalize=True,numCores=1):
     return matrix
 
 
-def isoLock(refMasses,queryMasses,driftRange=0.005,toTest=50,targetDiff=0.0001):
-    bestDrift = 0
-    bestIsoPairs = 0
-    refMasses = list(refMasses)
-    refMasses.sort()
-
-    for drift in np.linspace(-1*driftRange,driftRange,toTest):
-        sep = 1.00336 + drift
-        massesToFind = refMasses + sep
-        numPairs = 0
-        for m in massesToFind:
-            best = take_closest(queryMasses,m)
-            if np.abs(best-m) < targetDiff:
-                numPairs += 1
-        if (numPairs == bestIsoPairs and drift < bestDrift) or numPairs > bestIsoPairs:
-            bestDrift = drift
-            bestIsoPairs = numPairs
-    print(bestIsoPairs,"isopairs found with drift",bestDrift)
-    return bestDrift
+# def isoLock(refMasses,queryMasses,driftRange=0.005,toTest=50,targetDiff=0.0001):
+#     bestDrift = 0
+#     bestIsoPairs = 0
+#     refMasses = list(refMasses)
+#     refMasses.sort()
+#
+#     for drift in np.linspace(-1*driftRange,driftRange,toTest):
+#         sep = 1.00336 + drift
+#         massesToFind = refMasses + sep
+#         numPairs = 0
+#         for m in massesToFind:
+#             best = take_closest(queryMasses,m)
+#             if np.abs(best-m) < targetDiff:
+#                 numPairs += 1
+#         if (numPairs == bestIsoPairs and drift < bestDrift) or numPairs > bestIsoPairs:
+#             bestDrift = drift
+#             bestIsoPairs = numPairs
+#     print(bestIsoPairs,"isopairs found with drift",bestDrift)
+#     return bestDrift
 
 def takeClosestInd(myList, myNumber):
     """
@@ -1103,15 +1119,13 @@ def takeClosestInd(myList, myNumber):
 
 def mergeSpectra(spectra,ppm):
     if len(spectra) > 0:
-        mergedSpectrumMzs = [x for x in spectra[0]]
-        mergedSpectrumMzs.sort()
-        mergedSpectrumInts = [spectra[0][x] for x in mergedSpectrumMzs]
+        mergedSpectrumMzs = [x[0] for x in spectra[0]]
+        mergedSpectrumInts = [x[1] for x in spectra[0]]
 
         if len(spectra) > 1:
             fact = ppm / 1e6
             for spectrum in spectra[1:]:
-                for mz,i in spectrum.items():
-
+                for mz,i in spectrum:
                     if len(mergedSpectrumMzs) > 0:
 
                         x = takeClosestInd(mergedSpectrumMzs,mz)
@@ -1135,5 +1149,5 @@ def mergeSpectra(spectra,ppm):
         mergedSpectrumInts = []
 
 
-    return {mz:i for mz,i in zip(mergedSpectrumMzs,mergedSpectrumInts)}
+    return [[mz,i] for mz,i in zip(mergedSpectrumMzs,mergedSpectrumInts)]
 
