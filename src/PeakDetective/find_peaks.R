@@ -15,6 +15,9 @@ mzDiff <- as.numeric(args[10])#.0001
 frac <- as.numeric(args[11])
 fn <- args[6]
 
+register(SerialParam())
+
+
 setwd(pathData)
 
 files = list.files(pattern = "*.mzML")
@@ -22,6 +25,8 @@ files = list.files(pattern = "*.mzML")
 numFiles = length(files)
 
 xs = readMSData(files,mode="onDisk",msLevel=1)
+
+xs = filterEmptySpectra(xs)
 
 params <- CentWaveParam(ppm = ppm, peakwidth = c(minWidth, maxWidth),noise=noise,
                         snthresh = s2n,mzdiff = mzDiff,prefilter = c(prefilter,100),

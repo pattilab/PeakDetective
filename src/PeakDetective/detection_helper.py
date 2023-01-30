@@ -132,7 +132,14 @@ class PeakList():
         arr = self.peakList[sample_keys].values.transpose()
 
         # find the minimum non-zero value of each compound
-        max_vals = [np.min([x for x in c if x > minimum]) for c in arr.transpose()]
+        max_vals = []
+
+        for c in arr.transpose():
+            tmp = [x for x in c if x > minimum]
+            if len(tmp) > 0:
+                max_vals.append(np.min(tmp))
+            else:
+                max_vals.append(2)
 
         # impute values
         data_imp = np.zeros(arr.shape)

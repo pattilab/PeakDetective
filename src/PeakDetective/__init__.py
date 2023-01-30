@@ -197,26 +197,12 @@ class PeakDetective():
         rtstarts = [rt - self.windowSize/2 for rt in rts]
         rtends = [rt + self.windowSize/2 for rt in rts]
         args = []
-        numToGetPerProcess = int(len(rawdatas)*len(mzs)/float(self.numCores))
         featInds = []
         for rawdata in rawdatas:
-            tmpMzs = []
-            tmpRtStarts = []
-            tmpRTends = []
-            for mz,rtstart,rtend,i in zip(mzs,rtstarts,rtends,range(len(mzs))):
-                tmpMzs.append(mz)
-                tmpRtStarts.append(rtstart)
-                tmpRTends.append(rtend)
-                featInds.append(i)
-                if len(tmpMzs) == numToGetPerProcess:
-                    args.append([rawdata,tmpMzs,tmpRtStarts,tmpRTends,self.resolution])
-                    tmpMzs = []
-                    tmpRtStarts = []
-                    tmpRTends = []
+            featInds += list(range(len(mzs)))
+            args.append([rawdata, mzs, rtstarts, rtends,self.resolution])
 
-            if len(tmpMzs) > 0: args.append([rawdata, tmpMzs, tmpRtStarts, tmpRTends,self.resolution])
-
-        result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, 1, "forming matrix", len(args))
+        result = startConcurrentTask(PeakDetective.getNormalizedIntensityVector, args, self.numCores, "forming matrix", len(args))
 
         result = np.concatenate(result,axis=0)
 
