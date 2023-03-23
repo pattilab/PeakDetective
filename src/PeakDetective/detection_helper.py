@@ -5,6 +5,9 @@ import os
 import uuid
 import bisect
 from . import printProgressBar, startConcurrentTask, getIndexOfClosestValue
+from sklearn.ensemble import RandomForestRegressor
+import matplotlib.pyplot as plt
+
 
 class PeakList():
     def __init__(self,peakList = None):
@@ -164,6 +167,23 @@ class PeakList():
     def logTransform(self,sampleCols):
         self.peakList[sampleCols] = np.log2(self.peakList[sampleCols].values)
 
+    def batchCorrect(self,sampleCols,qcCols,batchInfo,plot=True):
+
+        reg = RandomForestRegressor(n_jobs=10)
+
+        peak_areas = self.peakList[sampleCols].values.transpose()
+
+        X = np.array(batchInfo[qcCols])
+        y = peak_areas[qcCols] - np.mean(peak_areas[qcCols], axis=0)
+        reg.fit(X, y)
+        preds = reg.predict(batchInfo)
+        if plot:
+            plt.figure()
+            plt.plot(list(range(len(preds))),np.mean(preds,axis=1))
+            plt.errorbar(list(range(len(preds))),np.mean(preds,axis=1),yerr=np.std(preds,axis=1),fmt=".",capsize=1)
+            plt.xlabel("run order")
+            plt.ylabel("correction factor")
+        self.peakList[sampleCols] = np.array(peak_areas - preds).transpose()
 
         
 
@@ -181,12 +201,14 @@ def mergePeakLists(peakLists,names,ppm=20,rtTol=.5):
     peakLists = [x[["mz","rt"]].reset_index() for x in peakLists]
     mergedList = peakLists[0]
     peakFounders = {n:{} for n in names}
+    peakIndices = {n:{} for n in names}
 
     for index,row in mergedList.iterrows():
         peakFounders[names[0]][index] = 1
+        peakIndices[names[0]][index] = index
         for n in names[1:]:
             peakFounders[n][index] = 0
-
+            peakIndices[n][index] = -1
     for x,n in zip(peakLists[1:],names[1:]):
         for index,row in x.iterrows():
             new = True
@@ -196,20 +218,25 @@ def mergePeakLists(peakLists,names,ppm=20,rtTol=.5):
                 for index2,row2 in filt.iterrows():
                     if compareRT(row,row2,rtTol):
                         new = False
-                        peakFounders[n][index2] = 1 
+                        peakFounders[n][index2] = 1
+                        peakIndices[n][index2] = index
                         break
             if new:
                 ind = len(mergedList)
                 mergedList = pd.concat((mergedList,x.iloc[index:index+1,:]),axis=0,ignore_index=True)
                 for n2 in names:
                     peakFounders[n2][ind] = 0
+                    peakIndices[n2][ind] = -1
+
                 peakFounders[n][ind] = 1
+                peakIndices[n][ind] = index
                 
       
                             
     peakFounders = pd.DataFrame.from_dict(peakFounders,orient="index").transpose()
-    mergedList = pd.concat((mergedList,peakFounders),axis=1,ignore_index=False)
-    return mergedList
+    peakIndices = pd.DataFrame.from_dict(peakIndices,orient="index").transpose()
+
+    return pd.concat((mergedList,peakFounders),axis=1,ignore_index=False),pd.concat((mergedList,peakIndices),axis=1,ignore_index=False)
 
 def runMzUnity(df,polarity,ppm,q=None):
     dir = os.path.dirname(__file__)
