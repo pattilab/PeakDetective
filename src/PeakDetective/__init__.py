@@ -353,6 +353,7 @@ class PeakDetective():
             if len(updatingInds) > 0:
 
                 entropies = [-1 * np.sum([yyy * np.log(yyy) for yyy in yy]) for yy in y[updatingInds]]
+
                 order = list(range(len(updatingInds)))
                 order.sort(key=lambda x: entropies[x], reverse=True)
                 order = [updatingInds[x] for x in order]
@@ -360,7 +361,11 @@ class PeakDetective():
                 if len(order) < numManualPerRound:
                     numManualPerRound = len(order)
 
-                for ind in order[:numManualPerRound]:
+                inds = np.random.choice(order,numManualPerRound,replace=False,p=np.array(entropies) / np.sum(entropies))
+
+                #inds = order[:numManualPerRound]
+
+                for ind in inds:
                     val = self.labelPeak([X[ind]], -1*self.windowSize/2, self.windowSize/2, inJupyter, y[ind][1],"relative retention time")
                     y[ind, 0] = 1 - val
                     y[ind, 1] = val
