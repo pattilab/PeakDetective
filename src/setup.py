@@ -14,7 +14,7 @@ setup(
     install_requires=[  # I get to this in a second
         'pyteomics',
         'numpy',
-        'scipy==1.7.1',
+        'scipy',
         "matplotlib",
         "tensorflow",
         "scikit-learn",

@@ -959,7 +959,7 @@ def alignPeaks(peaks,normalize=True,reference=0,q=None):
 
     for x,peak in enumerate(peaks_norm):
         if x > 0:
-            distance, path = fastdtw(reference_peak, peak, dist=euclidean)
+            distance, path = fastdtw(np.array(reference_peak).flatten(), np.array(peak).flatten(), dist=2)
             xs = []
             ys = []
 
