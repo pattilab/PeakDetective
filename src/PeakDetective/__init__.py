@@ -140,58 +140,6 @@ class PeakDetective():
 
         return result
 
-    # def generateGaussianPeaks(self,n, centerDist, numPeaksDist=(0,2), widthFactor=0.1, heightFactor=1):
-    #     X_signal = np.zeros((n,self.resolution)) #self.generateNoisePeaks(X_norm, tics)
-    #     switcher = list(range(len(centerDist)))
-    #     for x, s in zip(range(len(X_signal)), np.random.random(len(X_signal))):
-    #         if numPeaksDist[0] >= numPeaksDist[1]:
-    #             numGuass = numPeaksDist[0]
-    #         else:
-    #             numGuass = np.random.randint(numPeaksDist[0], numPeaksDist[1])
-    #         for _ in range(numGuass):
-    #             ind = int(np.random.choice(switcher))
-    #             X_signal[x] += heightFactor * stats.norm.pdf(np.linspace(0, 1, self.resolution),
-    #                                  stats.uniform.rvs(centerDist[ind][0], centerDist[ind][1] - centerDist[ind][0]),
-    #                                  widthFactor * s + .001)
-    #         #if np.sum(tmp) > 0:
-    #         #    tmp = (1 - s2n[x]) * tmp / np.sum(tmp)
-    #     X_signal = normalizeMatrix(X_signal)
-    #
-    #     return X_signal
-    #
-    # def generateFalsePeaks(self,peaks,raw_datas, n=None,align=False):
-    #     if type(n) == type(None):
-    #         n = len(peaks)
-    #
-    #     peaks_rand = pd.DataFrame()
-    #     peaks_rand["rt"] = rd.choices(list(peaks["rt"].values),k=n)
-    #     peaks_rand["mz"] = rd.choices(list(peaks["mz"].values),k=n)
-    #
-    #     X_noise = self.makeDataMatrix(raw_datas,peaks_rand["mz"].values,peaks_rand["rt"].values,align)
-    #
-    #     return X_noise
-    #
-    # def generateSignalPeaks(self,peaks,raw_datas,widthFactor = 0.1,heightFactor = 1,n=None,align=False):
-    #     if type(n) == type(None):
-    #         n = len(peaks)
-    #     X_noise = self.generateFalsePeaks(peaks,raw_datas,n=n,align=align)
-    #     X_signal = self.generateGaussianPeaks(int(n*len(raw_datas)),[[0.45,0.5],[0.5,0.55]],(1,1),widthFactor,heightFactor)
-    #
-    #     samp = peaks.loc[rd.choices(list(peaks.index.values),k=int(np.ceil(n))),:]
-    #     mzs = list(samp["mz"].values)
-    #
-    #     tmp = self.makeDataMatrix(raw_datas,mzs,samp["rt"].values,align=align)
-    #     tmp = tmp[:n*len(raw_datas),:]
-    #
-    #     signal_areas = np.array([integratePeak(x) for x in tmp])
-    #
-    #     X_signal = signal_areas[:, np.newaxis] * X_signal
-    #
-    #     X = X_noise + X_signal
-    #
-    #     return X
-    #
-
     def trainSmoother(self,peaks,raw_datas,numPeaks,smooth_epochs,batch_size,validation_split):
         """
         Train smoothing autoencoder network
@@ -349,10 +297,17 @@ class PeakDetective():
 
         doMore = True
         i=0
+
+        def padVal(val):
+            if val < 0.5:
+                return val + 1e-8
+            else:
+                return val - 1e-8
+
         while doMore:
             if len(updatingInds) > 0:
 
-                entropies = [-1 * np.sum([yyy * np.log(yyy) for yyy in yy]) for yy in y[updatingInds]]
+                entropies = [-1 * np.sum([padVal(val) * np.log(padVal(val)) for yyy in yy]) for yy in y[updatingInds]]
 
                 order = list(range(len(updatingInds)))
                 order.sort(key=lambda x: entropies[x], reverse=True)
