@@ -13,6 +13,7 @@ pip install PeakDetective
 ## Install R packages
 
 If you want to run mz.unity to remove degeneracies or run XCMS: the relevant R packages must also be installed (>20 min)
+This assumes R (>v4.0) has been installed on the computer and added to the path. 
 
 ```
 import PeakDetective.detection_helper as detection_helper
