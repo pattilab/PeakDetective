@@ -177,136 +177,103 @@ integ.save(mzmlFolder+"PeakDetectiveObject/")
 
 Step 1: set path to PeakDetective weights
 
-#%%
-
+```
 weightsPath = "example_data_for_colab/xcms_example_data/PeakDetectiveObject/"
-
-#%% md
+```
 
 Step 2: intitalize PeakDetective object and load weights
 
-#%%
-
+```
 integ = PeakDetective.PeakDetective(numCores = numCores,resolution=resolution)
 integ.load(weightsPath)
-
-#%% md
+```
 
 Set the cutoff
 
-#%%
-
+```
 cutoff = 0.8
+```
 
-#%% md
-
-# Curating a peak list:
-
-#%% md
+## Curating a peak list:
 
 Step 1: Upload or generate a peak list
 
-#%% md
-
 What filename is your uploaded file or what we should name your generated peak list?
 
-#%%
-
+```
 peakFile = "example_data_for_colab/xcms_example_data/peaks.csv" #path to peak file
-
-#%% md
+```
 
 Step 2: Where is your data?
 
-#%%
-
+```
 mzmlFolder = "example_data_for_colab/xcms_example_data/" #path to raw data folder
-
-#%% md
+```
 
 Step 3: Run XCMS to generate peak list (skip if you have already done this)
 
-#%% md
-
 What parameters do you want to use?
 
-#%%
-
+```
 ms1ppm = 25.5 #ppm tolerance
 peakWidth = (13.8,114.6) #retentin time peak width range (in seconds)
 s2n = 13.6 #signal to noise cutoff
 noise = 1 #noise threshold
 mzDiff = 0.0144 #minimum meaningful m/z difference
 prefilter = 5 #number of required consecutive scans to consider for ROI detection
-
-#%% md
+```
 
 Now run XCMS
 
-#%%
-
+```
 det = detection_helper.PeakList()
 det.runXCMS(mzmlFolder, peakFile.split("/")[-1], "negative", ms1ppm, peakWidth,s2n=s2n,noise=noise,mzDiff=mzDiff,prefilter=prefilter)
-
-#%% md
+```
 
 Step 4: Load raw data and peak file
 
-#%% md
-
 Read in peak list
 
-#%%
-
+```
 det = detection_helper.PeakList()
 det.readXCMSPeakList(mzmlFolder+"peaks.csv")
 peaklist = det.peakList[["mz","rt"]]
 peaklist.to_csv(mzmlFolder + "peaks_formatted.csv")
-peaklist
-
-#%% md
+```
 
 Read in raw data, enter the ppm tolerance to use in the cell below:
 
-#%%
-
+```
 ms1ppm = 25.5 #ppm tolerance
+```
 
-#%%
+Load raw data
 
-#load raw data
+```
 raw_data = []
 for file in [x for x in os.listdir(mzmlFolder) if ".mzML" in x]:
     temp = PeakDetective.rawData()
     temp.readRawDataFile(mzmlFolder + "/" + file,ms1ppm)
     raw_data.append(temp)
-
-#%% md
+```
 
 Step 5: Curate peaks, in the cell below set align = True to perform RT alginment of samples
 
-#%%
-
+```
 align = True #whether to perform RT alignment or not (True=align, False=do not align)
+```
 
-#%%
+curate peaks
 
+```
 if __name__ == "__main__":
     peak_curated,peak_scores,peak_intensities = integ.curatePeaks(raw_data,peaklist,threshold=cutoff,align=align)
-
-#%%
-
-peak_curated
-
-#%% md
+```
 
 Step 6: filter peaks only present in a particular fraction of samples.
 
-#%%
-
+```
 detectFrac = 0.5 #minimum fraction of samples where a metabolite must be detected
-
-#%%
 
 toDrop = []
 sampleCols = [x.filename for x in raw_data]
@@ -316,116 +283,88 @@ for index,row in peak_curated.iterrows():
 peak_curated = peak_curated.drop(toDrop,axis=0)
 peak_scores = peak_scores.drop(toDrop,axis=0)
 peak_intensities = peak_intensities.drop(toDrop,axis=0)
-peak_curated
-
-#%% md
+```
 
 Step 7: output results
 
-#%%
-
+```
 peak_curated.to_csv(mzmlFolder + "peaks_curated.csv")
 peak_scores.to_csv(mzmlFolder + "peak_scores.csv")
 peak_intensities.to_csv(mzmlFolder + "peak_intensities.csv")
+```
 
-#%% md
+## Detecting Peaks
 
-# Detecting Peaks
-
-#%% md
 
 Step 1: where is your data:
 
-#%%
-
+```
 mzmlFolder = "example_data_for_colab/xcms_example_data/" #path to raw data folder
-
-#%% md
+```
 
 Step 2: set parameters
 
-#%%
-
+```
 detectFrac = 0.5 #fraction of samples were a feature must be detected
 noise = 1000 #noise threshold for finding ROIs (set to baseline noise value)
 ms1ppm = 25.5 #ppm tolerance
 align = True #whether to perform RT alignment
 window = 0.1 #minimum expected spacing between peaks in minutes. Generally 0.05 to 0.2 works well.
-
-#%% md
+```
 
 Step 3: load data
 
-#%%
-
+```
 #load raw data
 raw_data = []
 for file in [x for x in os.listdir(mzmlFolder) if ".mzML" in x]:
     temp = PeakDetective.rawData()
     temp.readRawDataFile(mzmlFolder + "/" + file,ms1ppm)
     raw_data.append(temp)
-
-#%% md
+```
 
 Step 4: Detect peaks
 
-#%%
-
+```
 if __name__ == "__main__":
     peak_scores_pd_det, peak_intensities_pd_det,rois = integ.detectPeaks(raw_data, cutoff=cutoff, intensityCutoff = noise,numDataPoints=numDataPoints,window=window,align=align,detectFrac=detectFrac)
-
-#%%
-
-peak_intensities_pd_det
-
-#%% md
+```
 
 Step 5: output results
 
-#%%
-
+```
 peak_scores_pd_det.to_csv(mzmlFolder + "peak_scores_pd.csv")
 peak_intensities_pd_det.to_csv(mzmlFolder + "peak_intensities_pd.csv")
+```
 
-#%% md
 
-# Integrating a peak list
+## Integrating a peak list
 
-#%% md
 
 Step 1: Upload or generate a peak list
 
-#%% md
-
 What filename is your uploaded file or what we should name your generated peak list?
 
-#%%
-
+```
 peakFile = "example_data_for_colab/xcms_example_data/peaks.csv" #path to peak file
-
-#%% md
+```
 
 Step 2: Where is your data?
 
-#%%
-
+```
 mzmlFolder = "example_data_for_colab/xcms_example_data/" #path to raw data folder
-
-#%% md
+```
 
 Step 3: set parameters
 
-#%%
-
+```
 align=True
 ms1ppm = 25.5
-
-#%% md
+```
 
 Step 4: load data
 
-#%%
-
+```
 peaklist = pd.read_csv(peakFile,index_col=0)[["mz","rt"]]
 
 #load raw data
@@ -434,124 +373,85 @@ for file in [x for x in os.listdir(mzmlFolder) if ".mzML" in x]:
     temp = PeakDetective.rawData()
     temp.readRawDataFile(mzmlFolder + "/" + file,ms1ppm)
     raw_data.append(temp)
-
-peaklist
-
-#%% md
+```
 
 Step 5: integrate peaks
 
-#%%
-
+```
 if __name__ == "__main__":
     X = integ.makeDataMatrix(raw_data,peaklist["mz"],peaklist["rt"].values,align=align)
     for r in raw_data:
         peaklist[r.filename] = 1.0
     peak_areas = integ.performIntegration(X, [r.filename for r in raw_data], peaklist, cutoff, defaultWidth=0.5,smooth=False)
-peak_areas
-
-#%% md
+```
 
 Step 6: output result
 
-#%%
-
+```
 peak_areas.to_csv(mzmlFolder + "peak_intensities_integration.csv")
+```
 
-#%% md
-
-# Filltering peak list for contaminants, redundancy
-
-#%% md
+## Filltering peak list for contaminants, redundancy
 
 Step 1: load peak list
 
-#%%
-
+```
 peakFile = "example_data_for_colab/xcms_example_data/peak_intensities_integration.csv" #path to peak file
+```
 
-#%%
-
+```
 df = pd.read_csv(peakFile,index_col=0)
-
-#%% md
+```
 
 Step 2: convert to PeakList object
 
-#%%
-
+```
 det = detection_helper.PeakList()
 det.from_df(df)
-print(det.sampleCols)
-det.peakList
-
-#%% md
+```
 
 Step 3: impute missing values
 
-#%%
-
+```
 det.imputeRowMin(det.sampleCols)
-
-#%% md
+```
 
 Step 4: remove contaminants
 
-#%% md
-
 first we have to set keys that are unique to blank and non-blank samples. The name of the peak area columns are listed by running the cells below. Enter the keys unique to blanks and non-blanks in the cell following. Additionally, enter the factor that sets how many times higher the mean intensity in the non-blank samples must be in comparision to the blanks.
 
-#%%
-
-det.sampleCols
-
-#%%
-
+```
 blankKey = ["blank"]
 sampleKey = ["NIST"]
 factor = 2
-
-#%% md
+```
 
 Now run background subtraction
 
-#%%
-
+```
 det.backgroundSubtract(blankKey,sampleKey,factor)
-det.peakList
-
-#%% md
+```
 
 Step 5: remove redundancies (isotopes, fragments, adducts, etc.) 
 
-#%% md
-
 First we have to set some thresholds for the correlation between redundant features and the retention time difference between redundant features
 
-#%%
-
+```
 corrThresh = 0.9 #minimum correlation of intensities in sample columns to consider as redundant
 rtThresh = 0.5 #maximum difference in RT to consider as redundant (in minutes)
 polarity = -1 #polarity of data (-1 for negative mode, 1 for postive mode
 ms1ppm = 25.5 #ppm tolerance
-
-#%% md
+```
 
 remove redundancies
 
-#%%
-
+```
 if __name__ == "__main__":
     det.removeRedundancy(corrThresh,rtThresh,polarity,ms1ppm,numCores,sampleCols=det.sampleCols)
-
-#%%
-
-det.peakList
-
-#%% md
+```
 
 Step 6 output results
 
-#%%
-
+```
 det.to_csv(peakFile.replace(".csv","_refined.csv"))
+```
