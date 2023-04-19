@@ -43,7 +43,7 @@ fastdtw
 PeakDetective can be run as a Google Colaboratory (Colab) notebook, which does not require installation of any software locally. This notebook 
 provides many use cases of PeakDetective and corresponding instructions
 
-The Colab notebook can be found [here](https://colab.research.google.com/drive/13Ouz-p_UC9kgfMqTJW3eHPiZusq2owic?usp=sharing).
+The Colab notebook can be found [here](https://drive.google.com/file/d/1GIoy8wBrO7KEi2DYm43Auey8uMC2lnzK/view?usp=sharing).
 
 
 # Usage
