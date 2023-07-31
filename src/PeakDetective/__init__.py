@@ -370,6 +370,203 @@ class PeakDetective():
         y = self.classifier.predict([X_latent, peak_areas])
         return y
 
+
+
+    def detectPeaksTargeted(self,raw_datas,peaks,ppmCutoff=10,rtCutoff=0.5,cutoff=0.5, intensityCutoff = 100,window=0.05,align=True,detectFrac=0.0,isotope="M+0"):
+
+        #find peaks in targeted list
+        rois = peaks[peaks["isotope"] == isotope]["mz"].values
+
+        peak_scores,peak_intensities = self.detectPeaksFromROIs(raw_datas,rois, cutoff, intensityCutoff,window,align,detectFrac)
+
+        #look for closest match
+        founds = []
+        mzs = []
+        rts = []
+        for index,row in peaks.iterrows():
+            if row["isotope"] == isotope:
+                filt = peak_scores[(peak_scores["rt"] > row["rt"] - rtCutoff) & (peak_scores["rt"] < row["rt"] + rtCutoff)]
+                if len(filt) > 0:
+                    minMz = row["mz"] - ppmCutoff/1e6 * row["mz"]
+                    maxMz = row["mz"] + ppmCutoff/1e6 * row["mz"]
+                    filt = filt[(filt["mz"] > minMz) & (filt["mz"] < maxMz)]
+                    if len(filt) > 0:
+                        filt["rt_diff"] = [np.abs(row["rt"] - rt) for rt in filt["rt"]]
+                        filt["ppm_error"] = [1e6 * np.abs(row["mz"] - mz)/row["mz"] for mz in filt["mz"]]
+                        filt = filt.sort_values(by="rt_diff",ascending=True)
+
+                        mzError = filt["mz"].values[0] - row["mz"]
+
+                        peaks_filt = peaks[peaks["group"] == row["group"]]
+
+                        for index2,row2 in peaks_filt.iterrows():
+                            founds.append(index2)
+                            mzs.append(row2["mz"] + mzError)
+                            rts.append(filt["rt"].values[0])
+
+
+        peaks = peaks.loc[founds,:]
+        peaks["mz_searched"] = peaks["mz"]
+        peaks["rt_searched"] = peaks["rt"]
+        peaks["mz"] = mzs
+        peaks["rt"] = rts
+
+        X = self.makeDataMatrix(raw_datas, mzs, rts, align=align)
+
+        y = self.classifyMatrix(X)
+
+        peak_curated = deepcopy(peaks)
+        peak_scores = deepcopy(peaks)
+        peak_intensities = deepcopy(peaks)
+
+        keys = []
+        for raw in raw_datas:
+            peak_scores[raw.filename] = np.zeros(len(peak_scores.index.values))
+            peak_intensities[raw.filename] = np.zeros(len(peak_scores.index.values))
+            for index in peaks.index.values:
+                keys.append([raw.filename, index])
+
+        for [file, index], score in zip(keys, y[:, 1]):
+            peak_scores.at[index, file] = score
+            val = 0
+            if score > cutoff:
+                val = 1
+            peak_curated.at[index, file] = val
+
+        if "peak_group" in peaks.columns.values:
+            peak_groups = peaks[["peak_group"]]
+        else:
+            peak_groups = None
+
+        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, cutoff,peakGrouping=peak_groups)
+
+        return peaks, peak_curated, peak_scores, peak_intensities
+
+    def detectPeaksFromROIs(self, rawDatas, rois, cutoff=0.5, intensityCutoff = 100,window=0.05,align=True,detectFrac=0.0):
+        print("generating all EICs from ROIs...")
+        dt = self.windowSize / self.resolution
+        tmpRes = int(math.ceil((rawDatas[0].rts[-1] - rawDatas[0].rts[0] + self.windowSize) / dt))
+        oldRes = int(self.resolution)
+        oldwindow = float(self.windowSize)
+        self.resolution = tmpRes
+        self.windowSize = rawDatas[0].rts[-1] + self.windowSize / 2 - rawDatas[0].rts[0] + self.windowSize / 2
+        rts = [(rawDatas[0].rts[-1] + rawDatas[0].rts[0]) / 2 for _ in rois]
+        X_tot = self.makeDataMatrix(rawDatas, rois, rts, align)
+        self.resolution = oldRes
+        self.windowSize = oldwindow
+
+        numPoints = 0
+        rt = rawDatas[0].rts[0]
+        while (rt <= rawDatas[0].rts[-1]):
+            numPoints += 1
+            rt += window
+
+        X = np.zeros((int(numPoints * len(rois) * len(rawDatas)), self.resolution))
+
+        mzs = []
+        rts = []
+        files = []
+        featInds = []
+
+        counter = 0
+        rowCounter = 0
+        trueDt = tmpRes / (rawDatas[0].rts[-1] + self.windowSize / 2 - rawDatas[0].rts[0] + self.windowSize / 2)
+        stride = int(np.floor(window * trueDt))
+
+        for rawData in rawDatas:
+            i = 0
+            for row in range(len(rois)):
+                rt = float(rawDatas[0].rts[0])
+                start = 0
+                end = start + self.resolution
+                for _ in range(numPoints):
+                    if end >= X_tot.shape[1]:
+                        n = X_tot.shape[1] - start
+                        print(start, end, n, X.shape, X_tot.shape, numPoints)
+                        X[counter, :n] = X_tot[rowCounter, start:]
+                    else:
+                        X[counter, :] = X_tot[rowCounter, start:end]
+                    counter += 1
+                    start += stride
+                    end += stride
+                    mzs.append(rois[row])
+                    rts.append(rt)
+                    rt += window
+                    files.append(rawData.filename)
+                    featInds.append(i)
+                    i += 1
+                rowCounter += 1
+
+        X = X[:counter]
+
+        print(len(X), "EICs constructed for evaluation")
+
+        peak_areas = [integratePeak(x) for x in X]
+        toClassify = [x for x in range(len(peak_areas)) if peak_areas[x] > intensityCutoff]
+
+        peak_scores = pd.DataFrame(index=range(len(set(featInds))))
+
+        orderedMzs = []
+        orderedRts = []
+
+        for row in range(len(rois)):
+            rt = float(rawDatas[0].rts[0])
+            for _ in range(numPoints):
+                orderedMzs.append(rois[row])
+                orderedRts.append(rt)
+                rt += window
+
+        peak_scores["mz"] = orderedMzs
+        peak_scores["rt"] = orderedRts
+
+        for rawData in rawDatas:
+            peak_scores[rawData.filename] = 0.0
+
+        y = np.zeros(len(X))
+        y[toClassify] = self.classifyMatrix(X[toClassify])[:, 1]
+        print("done")
+
+        goodInds = []
+        for id, filename, score in zip(featInds, files, y):
+            if score > cutoff:
+                goodInds.append(id)
+            peak_scores.at[id, filename] = score
+
+        detectNum = int(np.ceil(len(rawDatas) * detectFrac))
+        counts = {x: 0 for x in list(set(goodInds))}
+        for x in goodInds:
+            counts[x] += 1
+        goodInds = [x for x in counts if counts[x] >= detectNum]
+        goodInds.sort()
+
+        toKeep = []
+        for x in range(len(rawDatas)):
+            for g in goodInds:
+                toKeep.append(x * len(peak_scores) + g)
+
+        X = X[toKeep]
+
+        peak_scores = peak_scores.loc[goodInds, :]
+
+        peak_scores = peak_scores.reset_index()
+
+        apex_rts = self.updateRT(peak_scores, [raw.filename for raw in rawDatas], X, cutoff)
+
+        peak_scores["rt"] = np.round(apex_rts, 2)
+
+        apex_mzs = self.updateMz(peak_scores, rawDatas, cutoff)
+
+        peak_scores["mz"] = np.round(apex_mzs, 7)
+
+        peak_intensities = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
+
+        peak_intensities = peak_intensities.drop_duplicates(["mz", "rt"], keep="first")
+        peak_scores = peak_scores.drop_duplicates(["mz", "rt"], keep="first")
+
+        print(len(peak_scores), " peaks found")
+
+        return peak_scores, peak_intensities
+
     def curatePeaks(self,raw_datas,peaks,threshold=0.5,align=False):
         print("generating EICs...")
         mzs = peaks["mz"].values
@@ -403,134 +600,8 @@ class PeakDetective():
 
     def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=0.05,align=True,detectFrac=0.0):
         rois = self.roiDetection(rawDatas, intensityCutoff=intensityCutoff, numDataPoints=numDataPoints)
-
-        print("generating all EICs from ROIs...")
-        dt = self.windowSize / self.resolution
-        tmpRes = int(math.ceil((rawDatas[0].rts[-1] - rawDatas[0].rts[0] + self.windowSize) / dt))
-        oldRes = int(self.resolution)
-        oldwindow = float(self.windowSize)
-        self.resolution = tmpRes
-        self.windowSize = rawDatas[0].rts[-1] + self.windowSize/2 - rawDatas[0].rts[0] + self.windowSize/2
-        rts = [(rawDatas[0].rts[-1] + rawDatas[0].rts[0])/2 for _ in rois]
-        X_tot = self.makeDataMatrix(rawDatas, rois, rts,align)
-        self.resolution = oldRes
-        self.windowSize = oldwindow
-
-
-        numPoints = 0
-        rt = rawDatas[0].rts[0]
-        while(rt <= rawDatas[0].rts[-1]):
-            numPoints += 1
-            rt += window
-
-        X = np.zeros((int(numPoints * len(rois) * len(rawDatas)), self.resolution))
-
-
-        mzs = []
-        rts = []
-        files = []
-        featInds = []
-
-
-        counter = 0
-        rowCounter = 0
-        trueDt = tmpRes / (rawDatas[0].rts[-1] + self.windowSize/2 - rawDatas[0].rts[0] + self.windowSize/2)
-        stride = int(np.floor(window * trueDt))
-
-        for rawData in rawDatas:
-            i = 0
-            for row in range(len(rois)):
-                rt = float(rawDatas[0].rts[0])
-                start = 0
-                end = start + self.resolution
-                for _ in range(numPoints):
-                    if end >= X_tot.shape[1]:
-                        n = X_tot.shape[1] - start
-                        print(start,end,n,X.shape,X_tot.shape,numPoints)
-                        X[counter,:n]  = X_tot[rowCounter,start:]
-                    else:
-                        X[counter, :] = X_tot[rowCounter, start:end]
-                    counter += 1
-                    start += stride
-                    end += stride
-                    mzs.append(rois[row])
-                    rts.append(rt)
-                    rt += window
-                    files.append(rawData.filename)
-                    featInds.append(i)
-                    i += 1
-                rowCounter += 1
-
-        X = X[:counter]
-
-        print(len(X),"EICs constructed for evaluation")
-
-        peak_areas = [integratePeak(x) for x in X]
-        toClassify = [x for x in range(len(peak_areas)) if peak_areas[x] > intensityCutoff]
-
-        peak_scores = pd.DataFrame(index=range(len(set(featInds))))
-
-        orderedMzs = []
-        orderedRts = []
-
-        for row in range(len(rois)):
-            rt = float(rawDatas[0].rts[0])
-            for _ in range(numPoints):
-                orderedMzs.append(rois[row])
-                orderedRts.append(rt)
-                rt += window
-
-        peak_scores["mz"] = orderedMzs
-        peak_scores["rt"] = orderedRts
-
-        for rawData in rawDatas:
-            peak_scores[rawData.filename] = 0.0
-
-        y = np.zeros(len(X))
-        y[toClassify] = self.classifyMatrix(X[toClassify])[:, 1]
-        print("done")
-
-        goodInds = []
-        for id,filename, score in zip(featInds,files, y):
-            if score > cutoff:
-                goodInds.append(id)
-            peak_scores.at[id,filename] = score
-
-        detectNum = int(np.ceil(len(rawDatas) * detectFrac))
-        counts = {x:0 for x in list(set(goodInds))}
-        for x in goodInds:
-            counts[x] += 1
-        goodInds = [x for x in counts if counts[x] >= detectNum]
-        goodInds.sort()
-
-
-        toKeep = []
-        for x in range(len(rawDatas)):
-            for g in goodInds:
-                toKeep.append(x*len(peak_scores) + g)
-
-        X = X[toKeep]
-
-        peak_scores = peak_scores.loc[goodInds,:]
-
-        peak_scores = peak_scores.reset_index()
-
-        apex_rts = self.updateRT(peak_scores,[raw.filename for raw in rawDatas],X,cutoff)
-
-        peak_scores["rt"] = np.round(apex_rts,2)
-
-        apex_mzs = self.updateMz(peak_scores,rawDatas,cutoff)
-
-        peak_scores["mz"] = np.round(apex_mzs,7)
-
-        peak_intensities = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
-
-        peak_intensities = peak_intensities.drop_duplicates(["mz","rt"],keep="first")
-        peak_scores = peak_scores.drop_duplicates(["mz","rt"],keep="first")
-
-        print(len(peak_scores), " peaks found")
-
-        return peak_scores, peak_intensities, rois
+        peak_scores,peak_intensities = self.detectPeaksFromROIs(rawDatas,rois, cutoff, intensityCutoff ,window,align,detectFrac)
+        return peak_scores,peak_intensities,rois
 
     def updateRT(self,peakScores,samples,X,cutoff,smooth=False):
         i = 0
@@ -654,21 +725,35 @@ class PeakDetective():
         goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
         return peakScores.loc[goodInds,:]
 
-    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5,smooth=False):
-        i = 0
+    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5,smooth=False,peakGrouping=None):
+
+        if peakGrouping is None:
+            peakGrouping = pd.DataFrame(index=peakScores.index.values)
+            peakGrouping["peak_group"] = [x for x in range(len(peakGrouping))]
+
+        mapper = {index:i for index,i in zip(peakScores.index.values,range(len(peakScores)))}
+
         peak_areas = pd.DataFrame(index=peakScores.index.values,columns=["mz","rt"])
         peak_areas["mz"] = peakScores["mz"].values
         peak_areas["rt"] = peakScores["rt"].values
         peak_areas[samples] = np.zeros(peakScores[samples].values.shape)
         print("integrating peaks...")
-        for index,row in peakScores.iterrows():
+
+        integ_groups = list(set(peakGrouping["peak_group"].values))
+        counter = 0
+        for g in integ_groups:
+            filt = peakScores.loc[peakGrouping[peakGrouping["peak_group"] == g].index.values,:]
             inds = []
             allInds = []
-            for n,samp in enumerate(samples):
-                ind = i + n * len(peakScores)
-                if row[samp] > cutoff:
-                    inds.append(ind)
-                allInds.append(ind)
+            sampList = []
+            for index,row in filt.iterrows():
+                i = mapper[index]
+                for n, samp in enumerate(samples):
+                    ind = i + n * len(peakScores)
+                    if row[samp] > cutoff:
+                        inds.append(ind)
+                    allInds.append(ind)
+                    sampList.append(samp)
             if len(inds) > 0:
                 tmp = X[inds].sum(axis=0)
                 if smooth: tmp = self.smoother.predict(normalizeMatrix(np.array([tmp])),verbose=0)[0]
@@ -676,10 +761,10 @@ class PeakDetective():
             else:
                 lb = int(np.round(self.resolution / 2 - defaultWidth * self.resolution / 2))
                 rb = int(np.round(self.resolution/2 + defaultWidth * self.resolution/2))
-            for ind,sample in zip(allInds,samples):
+            for ind,sample in zip(allInds,sampList):
                 peak_areas.at[index,sample] = integratePeak(X[ind],[lb,rb])
-            i += 1
-            printProgressBar(i, len(peakScores), "integrating peaks", printEnd="")
+            counter += 1
+            printProgressBar(counter, len(integ_groups), "integrating peaks", printEnd="")
 
         return peak_areas
 
