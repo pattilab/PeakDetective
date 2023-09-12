@@ -21,7 +21,9 @@ import pickle as pkl
 import os
 import sklearn.metrics as met
 import datetime
-
+from scipy.signal import find_peaks,peak_widths
+import scipy
+from sklearn.mixture import GaussianMixture
 
 class PeakDetective():
     """
@@ -173,7 +175,7 @@ class PeakDetective():
         self.encoder = keras.Model(smoother.input, smoother.layers[7].output)
         print("done")
 
-    def trainClassifier(self,X,y,X_val,y_val,min_epochs,max_epochs,batch_size,restarts):
+    def trainClassifier(self,X,y,X_val,y_val,min_epochs,max_epochs,batch_size,reinitialize=True):
         """
         Train classifer network
         @param X: numpy matrix, input EICs to train on
@@ -205,57 +207,46 @@ class PeakDetective():
         #get latent rep. of validaiton EICs
         X_val = self.encoder.predict(X_tmp)
 
+        #make callback object
+        cb = keras.callbacks.EarlyStopping(
+            monitor="val_loss",
+            min_delta=0,
+            patience=3,
+            verbose=0,
+            mode="auto",
+            baseline=None,
+            restore_best_weights=True,
+        )
 
-        #begin training
-        bestLoss = np.inf
-        bestWeights = -1
-        bestValErr = -1
-        bestBestEpoch = -1
-        trainErr = -1
-        trainLoss = -1
+        history = keras.callbacks.History()
 
-        #iterate over random restarts
-        for x in range(restarts):
+        # initialize classifier
+        if reinitialize: classifer = ClassifierLatent(X_latent.shape[1])
+        else: classifer = self.classifier
 
-            #make callback object
-            cb = keras.callbacks.EarlyStopping(
-                monitor="val_loss",
-                min_delta=0,
-                patience=3,
-                verbose=0,
-                mode="auto",
-                baseline=None,
-                restore_best_weights=True,
-            )
-
-            history = keras.callbacks.History()
-
-            # initialize classifier
-            classifer = ClassifierLatent(X_latent.shape[1])
-
-            #train to minimum epochs
-            if min_epochs > 0:
-                classifer.fit([X_latent,tics],y,epochs=int(min_epochs),batch_size=batch_size,verbose=0,
-                              validation_data=([X_val, tic_val], y_val))
-
-            #train until maximum epochs with early stopping
-            classifer.fit([X_latent, tics], y, epochs=int(max_epochs-min_epochs),
-                          batch_size=batch_size, verbose=0, callbacks=[cb, history],
+        #train to minimum epochs
+        if min_epochs > 0:
+            classifer.fit([X_latent,tics],y,epochs=int(min_epochs),batch_size=batch_size,verbose=0,
                           validation_data=([X_val, tic_val], y_val))
 
-            #get performance
-            valLoss = history.history["val_loss"][cb.best_epoch]
-            valErr = history.history["val_mean_absolute_error"][cb.best_epoch]
-            bestEpoch = cb.best_epoch
+        #train until maximum epochs with early stopping
+        classifer.fit([X_latent, tics], y, epochs=int(max_epochs-min_epochs),
+                      batch_size=batch_size, verbose=0, callbacks=[cb, history],
+                      validation_data=([X_val, tic_val], y_val))
 
-            #update best performers
-            if valLoss < bestLoss:
-                bestLoss = valLoss
-                bestWeights = classifer.get_weights()
-                bestValErr = valErr
-                bestBestEpoch = bestEpoch
-                trainLoss = history.history["loss"][cb.best_epoch]
-                trainErr = history.history["mean_absolute_error"][cb.best_epoch]
+        #get performance
+        valLoss = history.history["val_loss"][cb.best_epoch]
+        valErr = history.history["val_mean_absolute_error"][cb.best_epoch]
+        bestEpoch = cb.best_epoch
+
+        #update best performers
+        #if valLoss < bestLoss:
+        bestLoss = valLoss
+        bestWeights = classifer.get_weights()
+        bestValErr = valErr
+        bestBestEpoch = bestEpoch
+        trainLoss = history.history["loss"][cb.best_epoch]
+        trainErr = history.history["mean_absolute_error"][cb.best_epoch]
 
         #print performance
         print("loss:",trainLoss,"mean_absolute_error:",trainErr,"val loss:", bestLoss, "val_mean_absolute_error:",bestValErr, "numEpochs:", min_epochs + bestBestEpoch)
@@ -267,7 +258,7 @@ class PeakDetective():
 
         return history
 
-    def trainClassifierActive(self,X,X_labeled,y_labeled,min_epochs,max_epochs,batch_size,restarts,numVal = 10,numManualPerRound=3,inJupyter=True):
+    def trainClassifierActive(self,X,X_labeled,y_labeled,min_epochs,max_epochs,batch_size,numVal = 10,numManualPerRound=3,inJupyter=True,reinitialize=False):
         trainingInds = []
 
         valInds = list(range(len(X)))
@@ -282,6 +273,8 @@ class PeakDetective():
 
         updatingInds = list(range(len(X)))
 
+        print("label validation peaks:")
+
         for ind in range(len(X_val)):
             val = self.labelPeak([X_val[ind]], -1*self.windowSize/2, self.windowSize/2, inJupyter,"","relative retention time")
             y_val[ind, 0] = 1 - val
@@ -291,11 +284,27 @@ class PeakDetective():
         if len(X_labeled) > 0:
             self.trainClassifier(X_labeled,
                                  y_labeled,
-                                 X_val,y_val, min_epochs,max_epochs, batch_size, restarts)
+                                 X_val,y_val, min_epochs,max_epochs, batch_size, reinitialize=reinitialize)
 
         y[updatingInds] = self.classifyMatrix(X[updatingInds])
 
-        doMore = True
+        print("error on validation peaks =", np.mean(np.abs(y_val[:,1] - y[valInds,1])))
+
+        plt.figure()
+        plt.hist(y[:, 1], bins=20)
+        plt.xlabel("PeakDetective Score")
+        plt.ylabel("Number of features")
+        plt.show()
+
+        print(str(len(updatingInds)) + " unclassified features remaining")
+        print("Continue with active learning? (1=Yes, 0=No): ")
+        tmp = float(input())
+        while not validateInput(tmp):
+            print("invalid classification: ")
+            tmp = float(input())
+
+        doMore = bool(tmp)
+
         i=0
 
         def padVal(val):
@@ -307,7 +316,7 @@ class PeakDetective():
         while doMore:
             if len(updatingInds) > 0:
 
-                entropies = [-1 * np.sum([padVal(val) * np.log(padVal(val)) for yyy in yy]) for yy in y[updatingInds]]
+                entropies = [-1 * np.sum([padVal(yyy) * np.log(padVal(yyy)) for yyy in yy]) for yy in y[updatingInds]]
 
                 order = list(range(len(updatingInds)))
                 order.sort(key=lambda x: entropies[x], reverse=True)
@@ -335,7 +344,7 @@ class PeakDetective():
                     y_train = y[trainingInds]
 
                 if len(X_train) > 0:
-                    self.trainClassifier(X_train,y_train,X_val,y_val,min_epochs,max_epochs,batch_size,restarts)
+                    self.trainClassifier(X_train,y_train,X_val,y_val,min_epochs,max_epochs,batch_size,reinitialize=reinitialize)
 
                 y[updatingInds] = self.classifyMatrix(X[updatingInds])
 
@@ -360,6 +369,8 @@ class PeakDetective():
 
         plotScoringStatistics(self.classifyMatrix(X_val)[:,1],y_val[:,1])
 
+        plt.show()
+
 
     def classifyMatrix(self,X):
         # normalize matrix
@@ -372,12 +383,12 @@ class PeakDetective():
 
 
 
-    def detectPeaksTargeted(self,raw_datas,peaks,ppmCutoff=10,rtCutoff=0.5,cutoff=0.5, intensityCutoff = 100,window=0.05,align=True,detectFrac=0.0,isotope="M+0"):
+    def detectPeaksTargeted(self,raw_datas,peaks,ppmCutoff=10,rtCutoff=0.5,cutoff=0.5, intensityCutoff = None,window=0.05,align=True,detectFrac=0.0,isotope="M+0",plot=None,smooth=False):
 
         #find peaks in targeted list
         rois = peaks[peaks["isotope"] == isotope]["mz"].values
 
-        peak_scores,peak_intensities = self.detectPeaksFromROIs(raw_datas,rois, cutoff, intensityCutoff,window,align,detectFrac)
+        peak_scores,peak_intensities = self.detectPeaksFromROIs(raw_datas,rois, cutoff, intensityCutoff,window,align,detectFrac,plot=None,smooth=False)
 
         #look for closest match
         founds = []
@@ -433,16 +444,18 @@ class PeakDetective():
                 val = 1
             peak_curated.at[index, file] = val
 
-        if "peak_group" in peaks.columns.values:
-            peak_groups = peaks[["peak_group"]]
+        if "group" in peaks.columns.values:
+            peak_groups = peaks[["group"]]
         else:
             peak_groups = None
 
-        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, cutoff,peakGrouping=peak_groups)
+        print(len(set(peak_groups["group"].values)),"peaks found")
+
+        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, cutoff,peakGrouping=peak_groups,plot=plot,smooth=smooth)
 
         return peaks, peak_curated, peak_scores, peak_intensities
 
-    def detectPeaksFromROIs(self, rawDatas, rois, cutoff=0.5, intensityCutoff = 100,window=0.05,align=True,detectFrac=0.0):
+    def detectPeaksFromROIs(self, rawDatas, rois, cutoff=0.5, intensityCutoff = None,window=0.05,align=True,detectFrac=0.0,plot=None,smooth=False):
         print("generating all EICs from ROIs...")
         dt = self.windowSize / self.resolution
         tmpRes = int(math.ceil((rawDatas[0].rts[-1] - rawDatas[0].rts[0] + self.windowSize) / dt))
@@ -473,8 +486,14 @@ class PeakDetective():
         trueDt = tmpRes / (rawDatas[0].rts[-1] + self.windowSize / 2 - rawDatas[0].rts[0] + self.windowSize / 2)
         stride = int(np.floor(window * trueDt))
 
+        noise = []
+
         for rawData in rawDatas:
             i = 0
+            if intensityCutoff is None:
+                nL = rawData.calculateNoise()
+            else:
+                nL = intensityCutoff
             for row in range(len(rois)):
                 rt = float(rawDatas[0].rts[0])
                 start = 0
@@ -491,6 +510,7 @@ class PeakDetective():
                     end += stride
                     mzs.append(rois[row])
                     rts.append(rt)
+                    noise.append(nL)
                     rt += window
                     files.append(rawData.filename)
                     featInds.append(i)
@@ -502,7 +522,12 @@ class PeakDetective():
         print(len(X), "EICs constructed for evaluation")
 
         peak_areas = [integratePeak(x) for x in X]
-        toClassify = [x for x in range(len(peak_areas)) if peak_areas[x] > intensityCutoff]
+
+        print("calculated peak areas")
+
+        toClassify = [x for x in range(len(peak_areas)) if peak_areas[x] > noise[x]]
+
+        print(len(toClassify), "EICs above intensity cutoff")
 
         peak_scores = pd.DataFrame(index=range(len(set(featInds))))
 
@@ -522,7 +547,13 @@ class PeakDetective():
         for rawData in rawDatas:
             peak_scores[rawData.filename] = 0.0
 
+
+        print("constructed peak scores")
+
+
         y = np.zeros(len(X))
+
+        print("starting classification")
         y[toClassify] = self.classifyMatrix(X[toClassify])[:, 1]
         print("done")
 
@@ -558,16 +589,28 @@ class PeakDetective():
 
         peak_scores["mz"] = np.round(apex_mzs, 7)
 
-        peak_intensities = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff)
+        #peak_intensities = self.performIntegration(X, [raw.filename for raw in rawDatas], peak_scores, cutoff,plot=plot,smooth=smooth)
 
-        peak_intensities = peak_intensities.drop_duplicates(["mz", "rt"], keep="first")
-        peak_scores = peak_scores.drop_duplicates(["mz", "rt"], keep="first")
+        #peak_intensities = peak_intensities.drop_duplicates(["mz", "rt"], keep="first")
+        peak_scores = peak_scores.drop_duplicates(["mz", "rt"], keep="first")[["mz","rt"]]
+
+        print(len(peak_scores), "peaks putatively detected")
+
+        peak_curated, peak_scores, peak_intensities = self.curatePeaks(rawDatas,peak_scores[["mz","rt"]],cutoff,align,plot,smooth)
+
+        files = list(set(files))
+        toDrop = [index for index,row in peak_curated.iterrows() if row[files].sum() < detectNum]
+
+        print(len(toDrop),"peaks failed curation")
+
+        peak_scores = peak_scores.drop(toDrop,axis=0)
+        peak_intensities = peak_intensities.drop(toDrop,axis=0)
 
         print(len(peak_scores), " peaks found")
 
         return peak_scores, peak_intensities
 
-    def curatePeaks(self,raw_datas,peaks,threshold=0.5,align=False):
+    def curatePeaks(self,raw_datas,peaks,threshold=0.5,align=False,plot_integration=None,smooth=False):
         print("generating EICs...")
         mzs = peaks["mz"].values
         rts =  peaks["rt"].values
@@ -594,13 +637,13 @@ class PeakDetective():
                 val = 1
             peak_curated.at[index, file] = val
 
-        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, threshold)
+        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, threshold,plot=plot_integration,smooth=smooth)
 
         return peak_curated,peak_scores,peak_intensities
 
-    def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = 100,numDataPoints=3,window=0.05,align=True,detectFrac=0.0):
+    def detectPeaks(self, rawDatas, cutoff=0.5, intensityCutoff = None,numDataPoints=3,window=0.05,align=True,detectFrac=0.0,plot=None,smooth=False):
         rois = self.roiDetection(rawDatas, intensityCutoff=intensityCutoff, numDataPoints=numDataPoints)
-        peak_scores,peak_intensities = self.detectPeaksFromROIs(rawDatas,rois, cutoff, intensityCutoff ,window,align,detectFrac)
+        peak_scores,peak_intensities = self.detectPeaksFromROIs(rawDatas,rois, cutoff, intensityCutoff ,window,align,detectFrac,plot,smooth=smooth)
         return peak_scores,peak_intensities,rois
 
     def updateRT(self,peakScores,samples,X,cutoff,smooth=False):
@@ -679,43 +722,19 @@ class PeakDetective():
 
         return val
 
-    def roiDetection(self,rawdatas,intensityCutoff=100,numDataPoints = 3):
+    def roiDetection(self,rawdatas,intensityCutoff=None,numDataPoints = 3):
         rtss = [rawdata.rts for rawdata in rawdatas]
-        rois = []
 
-        counter = 0
-        totalNum = np.sum([len(rts) for rts in rtss])
-        for rts,rawdata in zip(rtss,rawdatas):
-            ppm = rawdata.ppm
-            for rt in rts:
-                printProgressBar(counter, totalNum,prefix = "Detecting ROIs",suffix=str(len(rois)) + " ROIs found",printEnd="")
-                counter += 1
-                for mz, i in rawdata.data[rt]:
-                    if i > intensityCutoff:
-                        update,pos = binarySearchROI(rois,mz,ppm)
-                        if update:
-                            rois[pos]["mzs"].append(mz)
-                            rois[pos]["mz_mean"] = np.mean(rois[pos]["mzs"])
-                            rois[pos]["extended"] = True
-                            rois[pos]["count"] += 1
-                        else:
-                            if pos != len(rois):
-                                rois.insert(pos,{"mz_mean":mz,"mzs":[mz],"extended":True,"count":1})
-                            else:
-                                rois.append({"mz_mean":mz,"mzs":[mz],"extended":True,"count":1})
+        roises = startConcurrentTask(ROISearch,[[raw_data,intensityCutoff,numDataPoints] for raw_data in rawdatas],np.min([self.numCores,len(rawdatas)]),"running ROI search",len(rawdatas))
 
-            toKeep = []
-            for x in range(len(rois)):
-                if rois[x]["extended"] == True or rois[x]["count"] >= numDataPoints:
-                    toKeep.append(x)
+        roises = [{x:100 for x in rois} for rois in roises]
 
-            rois = [rois[x] for x in toKeep]
+        ppm = np.median([f.ppm for f in rawdatas])
 
-            for x in range(len(rois)):
-                rois[x]["extended"] = False
+        rois = list(mergeSpectra(roises,ppm).keys())
 
+        rois.sort()
 
-        rois = [x["mz_mean"] for x in rois]
         print()
         print(len(rois)," ROIs found")
 
@@ -725,11 +744,17 @@ class PeakDetective():
         goodInds = [index for index,row in peakScores.iterrows() if float(len([x for x in samples if row[x] > cutoff])) / len(samples) > frac]
         return peakScores.loc[goodInds,:]
 
-    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5,smooth=False,peakGrouping=None):
+    def performIntegration(self, X, samples, peakScores, cutoff, defaultWidth=0.5,smooth=False,peakGrouping=None,plot=None):
+
+        if not plot is None and type(plot) == type(""):
+            try:
+                os.mkdir(plot)
+            except:
+                pass
 
         if peakGrouping is None:
             peakGrouping = pd.DataFrame(index=peakScores.index.values)
-            peakGrouping["peak_group"] = [x for x in range(len(peakGrouping))]
+            peakGrouping["group"] = [x for x in range(len(peakGrouping))]
 
         mapper = {index:i for index,i in zip(peakScores.index.values,range(len(peakScores)))}
 
@@ -739,12 +764,14 @@ class PeakDetective():
         peak_areas[samples] = np.zeros(peakScores[samples].values.shape)
         print("integrating peaks...")
 
-        integ_groups = list(set(peakGrouping["peak_group"].values))
+        integ_groups = list(set(peakGrouping["group"].values))
         counter = 0
         for g in integ_groups:
-            filt = peakScores.loc[peakGrouping[peakGrouping["peak_group"] == g].index.values,:]
+            filt = peakScores.loc[peakGrouping[peakGrouping["group"] == g].index.values,:]
+            rt = filt["rt"].values[0]
             inds = []
             allInds = []
+            indexList = []
             sampList = []
             for index,row in filt.iterrows():
                 i = mapper[index]
@@ -754,15 +781,51 @@ class PeakDetective():
                         inds.append(ind)
                     allInds.append(ind)
                     sampList.append(samp)
+                    indexList.append(index)
             if len(inds) > 0:
                 tmp = X[inds].sum(axis=0)
                 if smooth: tmp = self.smoother.predict(normalizeMatrix(np.array([tmp])),verbose=0)[0]
                 lb,rb,apex = findPeakBoundaries(tmp)
+                if lb == rb:
+                    lb = int(np.round(self.resolution / 2 - defaultWidth * self.resolution / 2))
+                    rb = int(np.round(self.resolution / 2 + defaultWidth * self.resolution / 2))
             else:
                 lb = int(np.round(self.resolution / 2 - defaultWidth * self.resolution / 2))
                 rb = int(np.round(self.resolution/2 + defaultWidth * self.resolution/2))
-            for ind,sample in zip(allInds,sampList):
+                tmp = np.zeros(X.shape[1])
+
+            for index,ind,sample in zip(indexList,allInds,sampList):
                 peak_areas.at[index,sample] = integratePeak(X[ind],[lb,rb])
+
+            if not plot is None and type(plot) == type(""):
+
+                xaxis = np.linspace(rt-self.windowSize/2,rt + self.windowSize/2,X.shape[1])
+
+                norm = np.max(X[allInds])
+
+                #normalize tmp
+                tmp = norm * safeNormalizeMax(tmp)
+
+                #maxV = np.max(X[allInds].flatten())
+                #tmp = (tmp / np.max(tmp)) * maxV
+
+                plt.figure()
+                for ind in inds:#allInds:
+                    plt.plot(xaxis,X[ind],alpha=0.5,color="green")
+                for ind in allInds:
+                    if ind not in inds:
+                        plt.plot(xaxis,X[ind],alpha=0.5,color="grey")
+                if len(inds) > 0:
+                    plt.plot(xaxis, tmp, color="red", linestyle="--")
+
+                #plt.plot(xaxis,tmp,color="red",linestyle="--")
+                plt.plot([xaxis[lb],xaxis[lb]],[0,norm],color="grey",linestyle="--")
+                plt.plot([xaxis[rb],xaxis[rb]],[0,norm],color="grey",linestyle="--")
+                plt.xlabel("RT")
+                plt.ylabel("Intensity")
+                plt.savefig(plot + "/" + str(g) + ".png")
+                plt.close()
+
             counter += 1
             printProgressBar(counter, len(integ_groups), "integrating peaks", printEnd="")
 
@@ -867,8 +930,32 @@ class rawData():
     def getMergedSpectrum(self,rtRange=None,intensityThresh=0,ppm=1):
         if rtRange is None:
             rtRange = [self.rts[0],self.rts[-1]]
-        spectra = [[[mz,i] for mz,i in self.data[rt] if i > intensityThresh] for rt in self.rts if rt > rtRange[0] and rt < rtRange[1]]
+        spectra = [{mz:i for mz,i in self.data[rt] if i > intensityThresh} for rt in self.rts if rt > rtRange[0] and rt < rtRange[1]]
         return mergeSpectra(spectra,ppm)
+
+    def calculateNoise(self):
+        merged = self.getMergedSpectrum()
+
+        vals = np.array(list(merged.values()))
+
+        mix = GaussianMixture(2)
+
+        mix.fit(np.log10(vals).reshape(-1, 1))
+
+        xs = np.linspace(np.min(np.log10(vals)),np.max(np.log10(vals)),1000)
+
+        if mix.means_[0] < mix.means_[1]:
+            false_positive = area_under_gaussian_at_right(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
+            false_negative = area_under_gaussian_at_left(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
+
+        else:
+            false_positive = area_under_gaussian_at_right(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
+            false_negative = area_under_gaussian_at_left(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
+
+        threshold = xs[np.argmin(false_negative + false_positive)]
+
+        return 2*np.power(10,threshold)
+
 
 
 def Smoother(resolution):
@@ -991,30 +1078,32 @@ def makePRCPlot(pred,true,noSkill=True):
 
 
 def findPeakBoundaries(peak):
-    apex = int(len(peak)/2)
-    #find left bound
 
-    foundNewApex = True
+    peaks,_ = find_peaks(peak)
 
-    while(foundNewApex):
-        foundNewApex = False
+    if len(peaks) > 0:
 
-        x = apex
-        while peak[x] > peak[apex] / 2 and x > 0:
-            if peak[x] > peak[apex]:
-                apex = x
-            x -= 1
-        lb = x
+        peaks = list(peaks)
 
-        x = apex
-        while peak[x] > peak[apex] / 2 and x < len(peak) - 1:
-            if peak[x] > peak[apex]:
-                apex = x
-                foundNewApex = True
-            x += 1
-        rb = x
+        peaks.sort(key=lambda x: abs(x-int(len(peak)/2)))
 
-    return lb,rb,apex
+        peaks = peaks[:1]
+
+        half_widths = peak_widths(peak,peaks,rel_height=0.5)[0][0]
+
+        lb = int(np.round(peaks[0] - (half_widths/2)))
+
+        rb = int(np.round(peaks[0] + (half_widths/2)))
+
+        apex = peaks[0]
+
+
+    else:
+        lb = int(len(peak)/2)-3
+        rb = int(len(peak)/2)+3
+        apex = int(len(peak)/2)
+
+    return np.max([0,lb]),np.min([len(peak)-1,rb]),apex
 
 def integratePeak(peak,bounds=None):
     if bounds is None:
@@ -1105,13 +1194,15 @@ def takeClosestInd(myList, myNumber):
 
 def mergeSpectra(spectra,ppm):
     if len(spectra) > 0:
-        mergedSpectrumMzs = [x[0] for x in spectra[0]]
-        mergedSpectrumInts = [x[1] for x in spectra[0]]
+        mergedSpectrumMzs = [x for x in spectra[0]]
+        mergedSpectrumMzs.sort()
+        mergedSpectrumInts = [spectra[0][x] for x in mergedSpectrumMzs]
 
         if len(spectra) > 1:
             fact = ppm / 1e6
             for spectrum in spectra[1:]:
-                for mz,i in spectrum:
+                for mz,i in spectrum.items():
+
                     if len(mergedSpectrumMzs) > 0:
 
                         x = takeClosestInd(mergedSpectrumMzs,mz)
@@ -1134,8 +1225,49 @@ def mergeSpectra(spectra,ppm):
         mergedSpectrumMzs = []
         mergedSpectrumInts = []
 
+    return {mz:i for mz,i in zip(mergedSpectrumMzs,mergedSpectrumInts)}
 
-    return [[mz,i] for mz,i in zip(mergedSpectrumMzs,mergedSpectrumInts)]
+def ROISearch(rawdata,intensityCutoff,numDataPoints,q=None):
+    if intensityCutoff is None:
+        iC = rawdata.calculateNoise()
+    else:
+        iC = intensityCutoff
+
+    ppm = rawdata.ppm
+    rois = []
+    for rt in rawdata.data:
+        for mz, i in rawdata.data[rt]:
+            if i > iC:
+                update, pos = binarySearchROI(rois, mz, ppm)
+                if update:
+                    if not rois[pos]["closed"]:
+                        rois[pos]["mzs"].append(mz)
+                        rois[pos]["mz_mean"] = np.mean(rois[pos]["mzs"])
+                        rois[pos]["extended"] = True
+                        rois[pos]["count"] += 1
+                        if rois[pos]["count"] >= numDataPoints:
+                            rois[pos]["closed"] = True
+                else:
+                    if pos != len(rois):
+                        rois.insert(pos, {"mz_mean": mz, "mzs": [mz], "extended": True, "count": 1, "closed": False})
+                    else:
+                        rois.append({"mz_mean": mz, "mzs": [mz], "extended": True, "count": 1, "closed": False})
+
+        toKeep = []
+        for x in range(len(rois)):
+            if rois[x]["extended"] == True or rois[x]["closed"]:
+                toKeep.append(x)
+
+        rois = [rois[x] for x in toKeep]
+
+        for x in range(len(rois)):
+            rois[x]["extended"] = False
+
+    if not q is None:
+        q.put([])
+
+    return [x["mz_mean"] for x in rois if x["closed"]]
+
 
 #Utility functions:
 
@@ -1171,6 +1303,16 @@ def safeNormalize(x):
         return tmp / np.sum(tmp)
     else:
         return x/np.sum(x)
+
+def safeNormalizeMax(x):
+    """
+    Safely normalize a vector, x, to sum to 1.0. If x is the zero vector return the normalized unity vector
+    """
+    if np.max(x) < 1e-6:
+        tmp = np.zeros(x.shape)
+        return tmp
+    else:
+        return x / np.max(x)
 
 def normalizeMatrix(X):
     """
@@ -1321,3 +1463,11 @@ def binarySearchROI(poss, query, ppm):
                 return True, pos
             else:
                 return False, pos
+
+def area_under_gaussian_at_left(t, mu, sigma):
+    a = t - mu
+    b = math.sqrt(2) * sigma
+    return .5 * (1 + scipy.special.erf(a / b))
+
+def area_under_gaussian_at_right(t, mu, sigma):
+    return 1 - area_under_gaussian_at_left(t, mu, sigma)

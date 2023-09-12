@@ -27,7 +27,7 @@ class PeakList():
     def to_skyline(self,fn,polarity,moleculeListName = "XCMS peaks"):
         transitionList = pd.DataFrame(self.peakList)
         transitionList["Precursor Name"] = ["unknown " + str(index) for index, row in transitionList.iterrows()]
-        transitionList["Explicit Retention Time"] = [row["rt_start"] / 2 + row["rt_end"] / 2 for index, row in
+        transitionList["Explicit Retention Time"] = [row["rt"] for index, row in
                                                      transitionList.iterrows()]
         polMapper = {"Positive": 1, "Negative": -1}
         transitionList["Precursor Charge"] = [polMapper[polarity] for index, row in transitionList.iterrows()]
@@ -62,13 +62,6 @@ class PeakList():
     def installRPackages(self):
         dir = os.path.dirname(__file__)
         os.system("Rscript " + os.path.join(dir, "install_R_packages.R"))
-
-    #def filterAdductsIsotopes(self,adductsToKeep = ["[M+H]","[M-H]"],isotopesToKeep = ["[M]"]):
-    #    goodRows = []
-    #    for index,row in self.peakList.iterrows():
-    #        if (pd.isna(row["adduct_xcms"]) or any(x in row["adduct_xcms"] for x in adductsToKeep)) and (pd.isna(row["isotope_xcms"]) or any(x in row["isotope_xcms"] for x in isotopesToKeep)):
-    #            goodRows.append(index)
-    #    self.peakList = self.peakList.loc[goodRows,:]
 
     def removeRedundancy(self,corrThresh,rtThresh,polarity,ppm,numCores,sampleCols=None):
 
@@ -167,22 +160,29 @@ class PeakList():
     def logTransform(self,sampleCols):
         self.peakList[sampleCols] = np.log2(self.peakList[sampleCols].values)
 
+    def inverseLogTransform(self, sampleCols):
+        self.peakList[sampleCols] = np.power(2,self.peakList[sampleCols].values)
+
     def batchCorrect(self,sampleCols,qcCols,batchInfo,plot=True):
+        """
+        Correct batch effects
+        """
 
         reg = RandomForestRegressor(n_jobs=10)
 
         peak_areas = self.peakList[sampleCols].values.transpose()
 
-        X = np.array(batchInfo[qcCols])
-        y = peak_areas[qcCols] - np.mean(peak_areas[qcCols], axis=0)
+        X = np.array(batchInfo.loc[qcCols,:].values)
+        y = self.peakList[qcCols].values.transpose() - np.mean(self.peakList[qcCols].values.transpose(), axis=0)
         reg.fit(X, y)
-        preds = reg.predict(batchInfo)
+        preds = reg.predict(batchInfo.loc[sampleCols,:].values)
         if plot:
             plt.figure()
             plt.plot(list(range(len(preds))),np.mean(preds,axis=1))
             plt.errorbar(list(range(len(preds))),np.mean(preds,axis=1),yerr=np.std(preds,axis=1),fmt=".",capsize=1)
             plt.xlabel("run order")
             plt.ylabel("correction factor")
+
         self.peakList[sampleCols] = np.array(peak_areas - preds).transpose()
 
         
