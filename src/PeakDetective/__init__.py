@@ -110,24 +110,31 @@ class PeakDetective():
             q.put(0)
         return out
 
-    def makeDataMatrix(self,rawdatas,mzs,rts,align=False):
+    def makeDataMatrix(self,rawdatas,mzs,rts,align=False,groups=None):
         """
         make a matrix of EICs that is composed of every EIC for each feature in each file
         @param rawdatas: list of rawData objects, samples to generate EICs from
         @param mzs: list, list of m/z values to get EICs for
         @param rts: list,  list of retention time values to get EICs for
         @param align: bool, whether to perform retention time alignment or not (True = align, False = do not align)
+        @param group: list, group key to indicate if EICs should be aligned together
         @return: numpy matrix, matrix of EICs. The order of the matrix is first by samples then by features. For example, for an ouput matrix generated from n samples and m features, would have length n * m and the EIC for the ith feature for the jth sample would be in row: i + (j * m)
         """
         #gather start and end times of EIC windows
         rtstarts = [rt - self.windowSize/2 for rt in rts]
         rtends = [rt + self.windowSize/2 for rt in rts]
 
+        if groups is None:
+            groups = list(range(len(mzs)))
+
         #gather arguments for function
         args = []
         featInds = []
+        sampInds = []
+        i = 0
         for rawdata in rawdatas:
-            featInds += list(range(len(mzs)))
+            featInds += list(groups)
+            sampInds += [i for _ in groups]
             args.append([rawdata, mzs, rtstarts, rtends,self.resolution])
 
         #get EICs
@@ -138,7 +145,7 @@ class PeakDetective():
 
         #align EICs
         if align:
-            result = alignDataMatrix(result,featInds,True,self.numCores)
+            result = alignDataMatrix(result,featInds,sampInds,True,self.numCores)
 
         return result
 
@@ -422,7 +429,7 @@ class PeakDetective():
         peaks["mz"] = mzs
         peaks["rt"] = rts
 
-        X = self.makeDataMatrix(raw_datas, mzs, rts, align=align)
+        X = self.makeDataMatrix(raw_datas, mzs, rts, align=align,groups=peaks["group"])
 
         y = self.classifyMatrix(X)
 
@@ -927,14 +934,18 @@ class rawData():
 
         return s
 
-    def getMergedSpectrum(self,rtRange=None,intensityThresh=0,ppm=1):
+    def getMergedSpectrum(self,rtRange=None,intensityThresh=0,ppm=1,n=None):
         if rtRange is None:
             rtRange = [self.rts[0],self.rts[-1]]
         spectra = [{mz:i for mz,i in self.data[rt] if i > intensityThresh} for rt in self.rts if rt > rtRange[0] and rt < rtRange[1]]
+        if not n is None:
+            if n < len(spectra):
+                print(len(spectra),'spectra')
+                spectra = rd.sample(spectra,k=n)
         return mergeSpectra(spectra,ppm)
 
     def calculateNoise(self):
-        merged = self.getMergedSpectrum()
+        merged = self.getMergedSpectrum(n=500)
 
         vals = np.array(list(merged.values()))
 
@@ -1122,11 +1133,23 @@ def integratePeak(peak,bounds=None):
     return area
 
 
-def alignPeaks(peaks,normalize=True,reference=0,q=None):
+def alignPeaks(peaks,normalize=True,reference=0,sampInds = None,q=None):
+
+    if sampInds is None:
+        sampInds = list(range(len(peaks)))
+
+    uniqueSamps = list(set(sampInds))
+
+    uniqueSamps.sort()
+
+    sampMapper = {samp:[x for x in range(len(peaks)) if sampInds[x] == samp] for samp in uniqueSamps}
+
+    composite_peaks = [np.sum(np.array(peaks)[sampMapper[x]],axis=0) for x in uniqueSamps]
+
     if normalize:
-        peaks_norm = [safeNormalize(x) for x in peaks]
+        peaks_norm = [safeNormalize(x) for x in composite_peaks]
     else:
-        peaks_norm = deepcopy(peaks)
+        peaks_norm = deepcopy(composite_peaks)
 
     reference_peak = peaks_norm[reference]
     ref = list(range(len(reference_peak)))
@@ -1138,20 +1161,23 @@ def alignPeaks(peaks,normalize=True,reference=0,q=None):
             ys = []
 
             prev = path[0][0]
-            tmp = [peaks[x][path[0][1]]]
+            tmp = [[peaks[y][path[0][1]] for y in sampMapper[x]]]
             for p1,p2 in path[1:]:
                 if p1 != prev:
                     xs.append(prev)
-                    ys.append(np.mean(tmp))
+                    ys.append(np.mean(tmp,axis=1))
                     tmp = []
-                tmp.append(peaks[x][p2])
+                tmp.append([peaks[y][p2] for y in sampMapper[x]])
                 prev = p1
             xs.append(prev)
-            ys.append(np.mean(tmp))
+            ys.append(np.mean(tmp,axis=1))
+
+            ys = np.array(ys)
 
 
-            f = interp1d(xs,ys,fill_value=0.0,bounds_error=False)
-            peaks[x] = [f(i) for i in ref]
+            for i in range(ys.shape[1]):
+                f = interp1d(xs,ys[:,i],fill_value=0.0,bounds_error=False)
+                peaks[sampMapper[x][i]] = [f(i) for i in ref]
 
 
     if type(q) != type(None):
@@ -1159,13 +1185,20 @@ def alignPeaks(peaks,normalize=True,reference=0,q=None):
 
     return peaks
 
-def alignDataMatrix(matrix,peakInds,normalize=True,numCores=1):
+def alignDataMatrix(matrix,peakInds,sampInds,normalize=True,numCores=1):
+
+    #gather list of matrix rows that correspond to peak groups for all samples
+    #peak inds should indicate a unique peak
+    #sampe inds should indicate which peaks below to which samples
+
     uniquePeaks = list(set(peakInds))
+    peakMap = {peak:i for i,peak in enumerate(uniquePeaks)}
     order = [[] for _ in uniquePeaks]
-    args = [[[],normalize,0] for _ in uniquePeaks]
-    for i,peak,ind in zip(range(len(matrix)),matrix,peakInds):
-        args[ind][0].append(peak)
-        order[ind].append(i)
+    args = [[[],normalize,0,[]] for _ in uniquePeaks]
+    for i,peak,ind,sampInd in zip(range(len(matrix)),matrix,peakInds,sampInds):
+        args[peakMap[ind]][0].append(peak)
+        args[peakMap[ind]][3].append(sampInd)
+        order[peakMap[ind]].append(i)
     result = startConcurrentTask(alignPeaks,args,numCores,"aligning EICs",len(uniquePeaks))
     for peaks,inds in zip(result,order):
         for peak,ind in zip(peaks,inds):
