@@ -429,10 +429,6 @@ class PeakDetective():
         peaks["mz"] = mzs
         peaks["rt"] = rts
 
-        X = self.makeDataMatrix(raw_datas, mzs, rts, align=align,groups=peaks["group"])
-
-        y = self.classifyMatrix(X)
-
         peak_curated = deepcopy(peaks)
         peak_scores = deepcopy(peaks)
         peak_intensities = deepcopy(peaks)
@@ -441,24 +437,35 @@ class PeakDetective():
         for raw in raw_datas:
             peak_scores[raw.filename] = np.zeros(len(peak_scores.index.values))
             peak_intensities[raw.filename] = np.zeros(len(peak_scores.index.values))
+            peak_curated[raw.filename] = np.zeros(len(peak_scores.index.values))
             for index in peaks.index.values:
                 keys.append([raw.filename, index])
 
-        for [file, index], score in zip(keys, y[:, 1]):
-            peak_scores.at[index, file] = score
-            val = 0
-            if score > cutoff:
-                val = 1
-            peak_curated.at[index, file] = val
+        print(len(peaks),"of targeted peaks found")
 
-        if "group" in peaks.columns.values:
-            peak_groups = peaks[["group"]]
-        else:
-            peak_groups = None
+        if len(peaks) > 0:
 
-        print(len(set(peak_groups["group"].values)),"peaks found")
+            X = self.makeDataMatrix(raw_datas, mzs, rts, align=align,groups=peaks["group"])
 
-        peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, cutoff,peakGrouping=peak_groups,plot=plot,smooth=smooth)
+            y = self.classifyMatrix(X)
+
+            for [file, index], score in zip(keys, y[:, 1]):
+                peak_scores.at[index, file] = score
+                val = 0
+                if score > cutoff:
+                    val = 1
+                peak_curated.at[index, file] = val
+
+            if "group" in peaks.columns.values:
+                peak_groups = peaks[["group"]]
+            else:
+                peak_groups = None
+
+            print(len(set(peak_groups["group"].values)),"peaks kept")
+
+            peak_intensities = self.performIntegration(X, [raw.filename for raw in raw_datas], peak_scores, cutoff,peakGrouping=peak_groups,plot=plot,smooth=smooth)
+
+
 
         return peaks, peak_curated, peak_scores, peak_intensities
 
@@ -848,6 +855,15 @@ class rawData():
         self.ppm = ppm
         self.timestamp = None
 
+    def readTimeStamp(self,filename):
+        try:
+            with mzml.MzML(filename.replace('"', "")) as f:
+                self.timestamp = datetime.datetime.fromisoformat(
+                    next(f.iterfind('run', recursive=False))['startTimeStamp'][:-1]).astimezone(datetime.timezone.utc)
+        except:
+            print("Warning: file timestamp could not be read")
+            self.timestamp = None
+
     def readRawDataFile(self,filename,ppm,intensityThresh = 0):
         """
          Read MS datafile
@@ -855,12 +871,7 @@ class rawData():
         :param filename: str, path to MS datafile
         """
         try:
-            try:
-                with mzml.MzML(filename.replace('"', "")) as f:
-                    self.timestamp = datetime.datetime.fromisoformat(next(f.iterfind('run', recursive=False))['startTimeStamp'][:-1]).astimezone(datetime.timezone.utc)
-            except:
-                print("Warning: file timestamp could not be read")
-                self.timestamp = None
+            self.readTimeStamp(filename)
             reader = mzml.read(filename.replace('"', ""))
             ms1Scans = {}
             for temp in reader:
