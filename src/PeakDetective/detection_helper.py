@@ -176,6 +176,10 @@ class PeakList():
         y = self.peakList[qcCols].values.transpose() - np.mean(self.peakList[qcCols].values.transpose(), axis=0)
         reg.fit(X, y)
         preds = reg.predict(batchInfo.loc[sampleCols,:].values)
+
+        if len(preds.shape) == 1:
+            preds = np.array([list(preds),]).transpose()
+
         if plot:
             plt.figure()
             plt.plot(list(range(len(preds))),np.mean(preds,axis=1))
