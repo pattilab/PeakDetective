@@ -864,7 +864,7 @@ class rawData():
             print("Warning: file timestamp could not be read")
             self.timestamp = None
 
-    def readRawDataFile(self,filename,ppm,intensityThresh = 0):
+    def readRawDataFile(self,filename,ppm,intensityThresh = 0,denoise=False):
         """
          Read MS datafile
 
@@ -885,6 +885,10 @@ class rawData():
             self.data = ms1Scans
             self.filename = filename
             self.ppm = ppm
+
+            if denoise:
+                intensityThresh = self.calculateNoise()
+                self.readRawDataFile(filename,ppm,intensityThresh,False)
 
         except:
             print(sys.exc_info())
@@ -955,7 +959,7 @@ class rawData():
                 spectra = rd.sample(spectra,k=n)
         return mergeSpectra(spectra,ppm)
 
-    def calculateNoise(self):
+    def calculateNoise(self,tpr=None):
         merged = self.getMergedSpectrum(n=500)
 
         vals = np.array(list(merged.values()))
@@ -967,16 +971,26 @@ class rawData():
         xs = np.linspace(np.min(np.log10(vals)),np.max(np.log10(vals)),1000)
 
         if mix.means_[0] < mix.means_[1]:
-            false_positive = area_under_gaussian_at_right(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
-            false_negative = area_under_gaussian_at_left(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
+            false_positive = mix.weights_[0] * area_under_gaussian_at_right(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
+            false_negative = mix.weights_[1] * area_under_gaussian_at_left(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
+            true_positive = mix.weights_[1] * area_under_gaussian_at_right(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
 
         else:
-            false_positive = area_under_gaussian_at_right(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
-            false_negative = area_under_gaussian_at_left(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
+            false_positive = mix.weights_[1] * area_under_gaussian_at_right(xs, mix.means_[1], np.sqrt(mix.covariances_[1][0]))
+            false_negative = mix.weights_[0] * area_under_gaussian_at_left(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
+            true_positive = mix.weights_[0] * area_under_gaussian_at_right(xs, mix.means_[0], np.sqrt(mix.covariances_[0][0]))
 
-        threshold = xs[np.argmin(false_negative + false_positive)]
 
-        return 2*np.power(10,threshold)
+        if not tpr is None:
+            tprs = [tp/(tp + fn) for tp,fn in zip(true_positive,false_negative)]
+
+            threshold = xs[np.argmin(np.abs(np.array(tprs) - tpr))]
+
+        else:
+            threshold = xs[np.argmin(false_positive + false_negative)]
+
+
+        return np.power(10,threshold)
 
 
 
@@ -1273,7 +1287,7 @@ def mergeSpectra(spectra,ppm):
 
 def ROISearch(rawdata,intensityCutoff,numDataPoints,q=None):
     if intensityCutoff is None:
-        iC = rawdata.calculateNoise()
+        iC = rawdata.calculateNoise(tpr=0.95)
     else:
         iC = intensityCutoff
 
