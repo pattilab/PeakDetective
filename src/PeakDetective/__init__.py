@@ -295,7 +295,9 @@ class PeakDetective():
 
         y[updatingInds] = self.classifyMatrix(X[updatingInds])
 
-        print("error on validation peaks =", np.mean(np.abs(y_val[:,1] - y[valInds,1])))
+        y_val_pred = self.classifyMatrix(X_val)
+
+        print("error on validation peaks =", np.mean(np.abs(y_val[:,1] - y_val_pred[:,1])))
 
         plt.figure()
         plt.hist(y[:, 1], bins=20)
@@ -874,11 +876,25 @@ class rawData():
             self.readTimeStamp(filename)
             reader = mzml.read(filename.replace('"', ""))
             ms1Scans = {}
+            totalSpec = len([x for x in reader if x["ms level"] == 1])
+            print(totalSpec, "spectra detected")
+            reader.close()
+            reader = mzml.read(filename.replace('"', ""))
+            count = 0
             for temp in reader:
                 if temp['ms level'] == 1:
-                    spectrum = [[mz,i] for mz, i in zip(temp["m/z array"],temp["intensity array"]) if i > intensityThresh]
-                    spectrum.sort(key=lambda x:x[0])
-                    ms1Scans[temp["scanList"]["scan"][0]["scan start time"]] = spectrum
+                    spectrum = {float(mz): float(i) for mz, i in zip(temp["m/z array"], temp["intensity array"]) if
+                                i > intensityThresh}
+                    rt = temp["scanList"]["scan"][0]["scan start time"]
+                    if rt not in ms1Scans:
+                        ms1Scans[rt] = []
+
+                    spectrum = mergeSpectra([spectrum, {mz: i for mz, i in ms1Scans[rt]}], ppm)
+                    spectrum = [[mz, i] for mz, i in spectrum.items()]
+                    spectrum.sort(key=lambda x: x[0])
+                    ms1Scans[rt] = spectrum
+                    printProgressBar(count,totalSpec,"reading .mzML")
+                    count += 1
             reader.close()
             self.rts = list(ms1Scans.keys())
             self.rts.sort()
